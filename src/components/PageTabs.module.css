@@ -1,0 +1,35 @@
+.tabs {
+    display: flex;
+    align-items: flex-end;
+    height: 100%;
+    overflow-x: auto;
+}
+
+.tab {
+    display: flex;
+    align-items: center;
+    height: 100%;
+    padding: 0 4px 0 12px;
+    border-bottom: 2px solid transparent;
+    color: light-dark(var(--mantine-color-gray-6), var(--mantine-color-dark-1));
+    white-space: nowrap;
+}
+
+.tab:hover {
+    background-color: light-dark(#f2f5f9, var(--mantine-color-dark-6));
+}
+
+.tab[data-active] {
+    border-bottom-color: light-dark(#5b7fa8, #7d9cc2);
+    color: light-dark(var(--mantine-color-black), var(--mantine-color-white));
+}
+
+.tab .tabLabel {
+    height: 100%;
+    color: inherit;
+}
+
+.tab .close {
+    margin-left: 4px;
+    color: light-dark(#5b7fa8, #7d9cc2);
+}

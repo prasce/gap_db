@@ -1,0 +1,16 @@
+/* text colours follow the main window's blue-grey sidebar */
+.title {
+    color: light-dark(#34506f, var(--mantine-color-dark-0));
+}
+
+.card .heading {
+    color: light-dark(#4a6d96, var(--mantine-color-dark-0));
+}
+
+.card .label {
+    color: light-dark(#4a6d96, var(--mantine-color-dark-1));
+}
+
+.card .link {
+    color: light-dark(#5b7fa8, #86a2c3);
+}

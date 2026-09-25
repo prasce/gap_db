@@ -1,0 +1,1 @@
+import{j as o,T as e}from"./index-DQs29zT6.js";function t(){return o.jsx(e,{children:"you should see a loading animation (if your CPU is slow) or a network request for this component only once"})}export{t as default};
