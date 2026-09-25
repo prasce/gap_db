@@ -72,7 +72,8 @@
     "serve": "vite preview",
     "sloc": "sloc src src-tauri/src",
     "upgrade": "concurrently \"pnpm up\" \"cd src-tauri && cargo update && cargo clean\"",
-    "test": "mocha"
+    "test": "mocha",
+    "import-wms": "node scripts/import.mjs"
   },
   "eslintConfig": {
     "extends": [
@@ -88,6 +89,7 @@
     "concurrently": "^9.1.2",
     "dotenv-load": "^3.0.0",
     "mocha": "^11.1.0",
+    "pg": "^8.23.0",
     "postcss": "^8.5.2",
     "postcss-preset-mantine": "^1.17.0",
     "postcss-simple-vars": "^7.0.1",
