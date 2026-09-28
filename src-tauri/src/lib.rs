@@ -15,6 +15,7 @@ use tauri::{
 use tauri_plugin_store;
 use tauri_plugin_window_state;
 
+mod db;
 mod tray_icon;
 mod utils;
 
@@ -49,6 +50,7 @@ fn webkit_hidpi_workaround() {
 }
 
 fn main_prelude() {
+  db::load_env();
   #[cfg(target_os = "linux")]
   webkit_hidpi_workaround();
 }
@@ -69,7 +71,12 @@ pub fn run() {
     .plugin(tauri_plugin_shell::init())
     .plugin(tauri_plugin_fs::init())
     // custom commands
-    .invoke_handler(tauri::generate_handler![tray_update_lang, process_file,])
+    .invoke_handler(tauri::generate_handler![
+      tray_update_lang,
+      process_file,
+      db::query_832_items,
+      db::count_832_items,
+    ])
     // allow only one instance and propagate args and cwd to existing instance
     .plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
       app

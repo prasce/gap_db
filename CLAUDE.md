@@ -9,7 +9,7 @@ A pre-launch integration pilot for GAP's Taiwan distribution centre. No accurate
 Two things share this repo:
 
 1. **The gap_db PostgreSQL database**: schema (`gap_db.sql`), the WMS file importer (`scripts/import.mjs`) and field notes (`注意事項.md`). This is the active work.
-2. **A Tauri v2 + React 19 + Mantine 7 desktop app**, started from the elibroftw "modern-desktop-app-template". `package.json` still names it `r2-t2`, and `tauri.conf.json` still has placeholder `productName`/`identifier`/updater values. The UI is not connected to the database yet.
+2. **A Tauri v2 + React 19 + Mantine 7 desktop app**, started from the elibroftw "modern-desktop-app-template". `package.json` still names it `r2-t2`, and `tauri.conf.json` still has placeholder `productName`/`identifier`/updater values. The 「貨品主檔」 page (`/item-master`) reads `gapwmc_832_item`; the other pages are still template placeholders.
 
 The user writes in Traditional Chinese. Keep doc and comment language consistent with the file being edited: `gap_db.sql`, `import.mjs` and `注意事項.md` are commented in Traditional Chinese.
 
@@ -61,6 +61,13 @@ pnpm run import-wms [--dry-run] [--replace] <files...>   # import WMS .im/.rc fi
   - It registers plugins (store, updater, single-instance, window-state, fs, dialog, log, etc.) and the custom commands (`process_file`, `tray_update_lang`) via `generate_handler!`.
   - The system tray lives in `tray_icon.rs`.
   - Rust→JS events (`newInstance`, `systemTray`, `longRunningThread`) are listened to in `App.tsx`.
+- **Database access from the app:** the frontend never connects to PostgreSQL directly. It calls Tauri commands in `src-tauri/src/db.rs` (`tokio-postgres`), such as `query_832_items` and `count_832_items`.
+  - `db::load_env()` loads `.env` from the project root, using a path fixed at compile time via `CARGO_MANIFEST_DIR`. This is a dev-only setup; a release build needs the `PG*` variables in its environment.
+  - Each command opens its own connection.
+  - Queries cast NUMERIC columns to `::text`, so Rust returns `Option<String>`.
+  - The column list in `db.rs` (`ITEM_832_COLUMNS`) and the one in `src/views/ItemMasterView.tsx` (`COLUMNS`) must stay in sync.
+  - A sidebar item can show a live count by setting `countCommand` in `SECTIONS` in `DoubleNavbar.tsx`.
+  - Pages that need the DB show a notice under `pnpm start`, because there is no Tauri backend in the browser.
 - **i18n:** `src/translations/{en,fr}.json` with flat keys (`keySeparator: false`).
 - **Frontend env vars:** only `VITE_*` and `TAURI_ENV_*` are exposed to the frontend (`vite.config.ts`), so the `PG*` vars in `.env` never reach the bundle.
 

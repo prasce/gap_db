@@ -25,6 +25,7 @@ import DealsView from './views/DealsView';
 import ExampleView from './views/ExampleView';
 import FallbackAppRender from './views/FallbackErrorBoundary';
 import FallbackSuspense from './views/FallbackSuspense';
+import ItemMasterView from './views/ItemMasterView';
 import { LoginPage } from './views/LoginPage';
 import { ForgotPassword } from './views/ForgotPassword';
 // if some views are large, you can use lazy loading to reduce the initial app load time
@@ -46,7 +47,7 @@ function MainApp() {
 
 	// routes; the sidebar menu itself is defined in DoubleNavbar.tsx
 	const views: View[] = [
-		{ component: DealsView, path: '/deals/open/all', name: 'All Open Deals' },
+		{ component: ItemMasterView, path: '/item-master', name: '貨品主檔' },
 		{ component: DealsView, path: '/deals/open/sales', name: 'Sales' },
 		{ component: DealsView, path: '/deals/open/purchases', name: 'Purchases' },
 		{ component: DealsView, path: '/deals/open/refinances', name: 'Refinances' },

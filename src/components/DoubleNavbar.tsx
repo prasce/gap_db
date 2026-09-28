@@ -1,6 +1,7 @@
 import { ActionIcon, Avatar, Collapse, Indicator, Text, Tooltip, UnstyledButton, useComputedColorScheme, useMantineColorScheme } from '@mantine/core';
 import { IconBell, IconChevronDown, IconChevronUp, IconFileText, IconHome, IconMenu2, IconPencil, IconUser } from '@tabler/icons-react';
-import { useState } from 'react';
+import { invoke, isTauri } from '@tauri-apps/api/core';
+import { useEffect, useState } from 'react';
 import { BsMoonStarsFill } from 'react-icons/bs';
 import { IoSunnySharp } from 'react-icons/io5';
 import { NavLink } from 'react-router-dom';
@@ -11,7 +12,9 @@ export const PANEL_WIDTH = 200;
 
 export interface NavItem {
 	label: string,
-	count: number,
+	// static count, or a Tauri command that returns the count from the database
+	count?: number,
+	countCommand?: string,
 	path: string
 }
 
@@ -24,7 +27,7 @@ export interface NavSection {
 export const SECTIONS: NavSection[] = [
 	{
 		label: 'Open Deals', items: [
-			{ label: 'All Open Deals', count: 64, path: '/deals/open/all' },
+			{ label: '貨品主檔', countCommand: 'count_832_items', path: '/item-master' },
 			{ label: 'Sales', count: 31, path: '/deals/open/sales' },
 			{ label: 'Purchases', count: 29, path: '/deals/open/purchases' },
 			{ label: 'Refinances', count: 4, path: '/deals/open/refinances' }
@@ -55,6 +58,17 @@ export function DoubleNavbar({ panelOpened, onTogglePanel, onNavigate }: DoubleN
 	const [openSections, setOpenSections] = useState<Record<string, boolean>>({ [SECTIONS[0]!.label]: true });
 	const toggleSection = (label: string) => setOpenSections(prev => ({ ...prev, [label]: !prev[label] }));
 
+	// counts loaded from the database, keyed by item path; left blank if the query fails
+	const [dbCounts, setDbCounts] = useState<Record<string, number>>({});
+	useEffect(() => {
+		if (!isTauri()) return;
+		SECTIONS.flatMap(section => section.items).forEach(item => {
+			if (item.countCommand) invoke<number>(item.countCommand)
+				.then(count => setDbCounts(prev => ({ ...prev, [item.path]: count })))
+				.catch(() => { });
+		});
+	}, []);
+
 	const railIcons = RAIL_ICONS.map(({ id, label, icon: Icon, badge }) => {
 		const icon = <Icon size={22} stroke={1.8} />;
 		return <Tooltip key={id} label={label} position='right' withArrow transitionProps={{ duration: 0 }}>
@@ -76,7 +90,7 @@ export function DoubleNavbar({ panelOpened, onTogglePanel, onNavigate }: DoubleN
 					<NavLink key={item.path} to={item.path} onClick={onNavigate}
 						className={({ isActive }) => classes.item + (isActive ? ' ' + classes.itemActive : '')}>
 						<Text size='sm'>{item.label}</Text>
-						<Text size='xs' className={classes.count}>{item.count}</Text>
+						<Text size='xs' className={classes.count}>{item.count ?? dbCounts[item.path]}</Text>
 					</NavLink>
 				)}
 			</Collapse>

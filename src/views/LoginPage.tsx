@@ -17,7 +17,7 @@ export function LoginPage() {
       });
       
       // 跳轉到主應用程式
-      navigate('/deals/open/all');
+      navigate('/item-master');
     } else {
       notifications.show({
         title: '登入失敗',
