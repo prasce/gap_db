@@ -76,6 +76,8 @@ pub fn run() {
       process_file,
       db::query_832_items,
       db::count_832_items,
+      db::query_850_receipts,
+      db::count_850_receipts,
     ])
     // allow only one instance and propagate args and cwd to existing instance
     .plugin(tauri_plugin_single_instance::init(|app, args, cwd| {

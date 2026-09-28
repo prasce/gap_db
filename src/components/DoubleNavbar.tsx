@@ -28,7 +28,7 @@ export const SECTIONS: NavSection[] = [
 	{
 		label: 'Open Deals', items: [
 			{ label: '貨品主檔', countCommand: 'count_832_items', path: '/item-master' },
-			{ label: 'Sales', count: 31, path: '/deals/open/sales' },
+			{ label: '收貨明細', countCommand: 'count_850_receipts', path: '/receiving' },
 			{ label: 'Purchases', count: 29, path: '/deals/open/purchases' },
 			{ label: 'Refinances', count: 4, path: '/deals/open/refinances' }
 		]
