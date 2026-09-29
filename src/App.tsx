@@ -50,8 +50,8 @@ function MainApp() {
 	const views: View[] = [
 		{ component: ItemMasterView, path: '/item-master', name: '貨品主檔' },
 		{ component: ReceivingView, path: '/receiving', name: '收貨明細' },
-		{ component: DealsView, path: '/deals/open/purchases', name: 'Purchases' },
-		{ component: DealsView, path: '/deals/open/refinances', name: 'Refinances' },
+		{ component: DealsView, path: '/deals/open/purchases', name: '出貨作業' },
+		{ component: DealsView, path: '/deals/open/refinances', name: '庫存查詢' },
 		{ component: ExampleView, path: '/example-view', name: t('ExampleView') },
 		{ component: () => <Text>Woo, routing works</Text>, path: '/example-view-2', name: 'Test Routing' },
 		{ component: LazyView, path: '/lazy-view', name: 'Lazy Load' }

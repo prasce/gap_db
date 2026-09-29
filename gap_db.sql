@@ -597,6 +597,7 @@ CREATE TABLE IF NOT EXISTS gapwmc_832_item (
     id                           BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     source_file                  VARCHAR(255),
     line_no                      INTEGER,
+    status                       VARCHAR(10),
     customer_code                VARCHAR(10) NOT NULL,
     sku                          VARCHAR(25) NOT NULL,
     item_desc                    VARCHAR(100),
@@ -628,9 +629,13 @@ CREATE TABLE IF NOT EXISTS gapwmc_832_item (
 
 CREATE INDEX IF NOT EXISTS ix_gapwmc_832_item_sku ON gapwmc_832_item (sku, customer_code);
 
+-- status 為 2026-09-29 新增欄位; 若資料表在此之前已建立, CREATE TABLE IF NOT EXISTS 不會補上, 用以下 ALTER 補齊
+ALTER TABLE gapwmc_832_item ADD COLUMN IF NOT EXISTS status VARCHAR(10);
+
 COMMENT ON TABLE gapwmc_832_item IS 'Gap 832 Item Definition 轉出的 WMS 商品檔 (.im)';
 COMMENT ON COLUMN gapwmc_832_item.source_file IS '匯入來源檔名';
 COMMENT ON COLUMN gapwmc_832_item.line_no IS '在來源檔中的行號 (不含標題行)';
+COMMENT ON COLUMN gapwmc_832_item.status IS '事件類型, 依來源檔名判斷: ADD (新增) / UPDATE (更新) / DELETE (刪除); 資料不覆寫, 何時發生以 created_at 為準';
 COMMENT ON COLUMN gapwmc_832_item.customer_code IS '檔案第 1 欄 (Customer_Code); 832 REF*19 REF02 Division Id (品牌)';
 COMMENT ON COLUMN gapwmc_832_item.sku IS '檔案第 2 欄 (SKU); 832 LIN03 Item Id 的前 8 碼; 最後一碼在 long_description 開頭';
 COMMENT ON COLUMN gapwmc_832_item.item_desc IS '檔案第 3 欄 (Item_Desc); 832 PID*F*08 PID05 Item Description';
@@ -660,8 +665,10 @@ COMMENT ON COLUMN gapwmc_832_item.udf6 IS '檔案第 26 欄 (UDF6); 832 REF*DP R
 
 -- ---------------------------------------------------------------------
 -- 3. gapwmc_850_header / detail / carton: Gap 850 轉出的 WMS 收貨檔 (.rc, '|' 分隔)
---    依正確拋檔建立: RCPHDR 46 欄, RCPDETL 71 欄, RCPCTNDR 8 欄。
+--    依正確拋檔建立: RCPHDR 64 欄, RCPDETL 75 欄, RCPCTNDR 8 欄。
 --    欄位名稱 fNN 的 NN = 檔案中的欄位順序; 有名稱的欄位已和 850 原始檔比對確認, 其餘保留 VARCHAR(255) 待確認。
+--    注意: RCPHDR 欄位順序在不同批次拋檔中曾經變動過 (2026-09 doc/new_850 樣本 vs 舊樣本),
+--    詳見 注意事項.md, 新增欄位前務必先用實際檔案核對欄位位置, 不可只依欄位數對齊。
 -- ---------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS gapwmc_850_header (
     id                           BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -676,28 +683,28 @@ CREATE TABLE IF NOT EXISTS gapwmc_850_header (
     f08                          VARCHAR(255),
     f09                          VARCHAR(255),
     f10                          VARCHAR(255),
-    f11                          VARCHAR(255),
-    f12                          VARCHAR(255),
-    f13                          VARCHAR(255),
+    f11_vendor_name              VARCHAR(60),
+    f12_vendor_number            VARCHAR(80),
+    f13_order_status             VARCHAR(80),
     f14                          VARCHAR(255),
     f15                          VARCHAR(255),
     f16                          VARCHAR(255),
     f17                          VARCHAR(255),
-    f18                          VARCHAR(255),
+    f18_country_of_origin        VARCHAR(60),
     f19                          VARCHAR(255),
     f20                          VARCHAR(255),
     f21                          VARCHAR(255),
     f22                          VARCHAR(255),
     f23                          VARCHAR(255),
-    f24_vendor_name              VARCHAR(60),
-    f25_vendor_number            VARCHAR(80),
+    f24                          VARCHAR(255),
+    f25                          VARCHAR(255),
     f26                          VARCHAR(255),
     f27                          VARCHAR(255),
     f28                          VARCHAR(255),
     f29                          VARCHAR(255),
     f30                          VARCHAR(255),
-    f31_country_of_origin        VARCHAR(60),
-    f32_order_status             VARCHAR(80),
+    f31                          VARCHAR(255),
+    f32                          VARCHAR(255),
     f33                          VARCHAR(255),
     f34                          VARCHAR(255),
     f35                          VARCHAR(255),
@@ -712,6 +719,24 @@ CREATE TABLE IF NOT EXISTS gapwmc_850_header (
     f44                          VARCHAR(255),
     f45_in_dc_date               VARCHAR(14),
     f46_po_creation_date         VARCHAR(14),
+    f47                          VARCHAR(255),
+    f48                          VARCHAR(255),
+    f49                          VARCHAR(255),
+    f50                          VARCHAR(255),
+    f51                          VARCHAR(255),
+    f52                          VARCHAR(255),
+    f53                          VARCHAR(255),
+    f54                          VARCHAR(255),
+    f55                          VARCHAR(255),
+    f56                          VARCHAR(255),
+    f57                          VARCHAR(255),
+    f58                          VARCHAR(255),
+    f59                          VARCHAR(255),
+    f60                          VARCHAR(255),
+    f61                          VARCHAR(255),
+    f62                          VARCHAR(255),
+    f63                          VARCHAR(255),
+    f64                          VARCHAR(255),
     created_at                   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -730,28 +755,28 @@ COMMENT ON COLUMN gapwmc_850_header.f07 IS '檔案第 7 欄; 用途待確認';
 COMMENT ON COLUMN gapwmc_850_header.f08 IS '檔案第 8 欄; 用途待確認';
 COMMENT ON COLUMN gapwmc_850_header.f09 IS '檔案第 9 欄; 用途待確認';
 COMMENT ON COLUMN gapwmc_850_header.f10 IS '檔案第 10 欄; 用途待確認';
-COMMENT ON COLUMN gapwmc_850_header.f11 IS '檔案第 11 欄; 用途待確認';
-COMMENT ON COLUMN gapwmc_850_header.f12 IS '檔案第 12 欄; 用途待確認';
-COMMENT ON COLUMN gapwmc_850_header.f13 IS '檔案第 13 欄; 用途待確認';
-COMMENT ON COLUMN gapwmc_850_header.f14 IS '檔案第 14 欄; 用途待確認';
+COMMENT ON COLUMN gapwmc_850_header.f11_vendor_name IS '檔案第 11 欄; 850 N1*MF N102 Manufacturing Vendor Name, AN 1/60 (Gap 說明長度 35); 2026-09 doc/new_850 樣本此欄位移到第 11 欄 (原第 24 欄, 見 注意事項.md); 範例值: NINGBO LIGHT (HK) CO LIMITED';
+COMMENT ON COLUMN gapwmc_850_header.f12_vendor_number IS '檔案第 12 欄; 850 N1*MF N104 Manufacturing Vendor Number, AN 2/80 (Gap 說明長度 10); 2026-09 doc/new_850 樣本此欄位移到第 12 欄 (原第 25 欄); 範例值: 700084780';
+COMMENT ON COLUMN gapwmc_850_header.f13_order_status IS '檔案第 13 欄; 850 PID*X*63 PID05 Order Status Description; 規格列 APPROVED / COMPLETED, 850 範例檔另有 ACTIVE / COMPLETE / CANCELLED; 2026-09 doc/new_850 樣本此欄位移到第 13 欄 (原第 32 欄); 範例值: ACTIVE';
+COMMENT ON COLUMN gapwmc_850_header.f14 IS '檔案第 14 欄; 用途待確認, 2026-09 doc/new_850 三個樣本檔皆為固定值 0001-08-01, 疑似預設/無意義日期';
 COMMENT ON COLUMN gapwmc_850_header.f15 IS '檔案第 15 欄; 用途待確認';
 COMMENT ON COLUMN gapwmc_850_header.f16 IS '檔案第 16 欄; 用途待確認';
 COMMENT ON COLUMN gapwmc_850_header.f17 IS '檔案第 17 欄; 用途待確認';
-COMMENT ON COLUMN gapwmc_850_header.f18 IS '檔案第 18 欄; 用途待確認';
+COMMENT ON COLUMN gapwmc_850_header.f18_country_of_origin IS '檔案第 18 欄; 850 N1*CT N102 Origin Country, 2 碼國家代碼; 2026-09 doc/new_850 樣本此欄位移到第 18 欄 (原第 31 欄); 範例值: ID';
 COMMENT ON COLUMN gapwmc_850_header.f19 IS '檔案第 19 欄; 用途待確認';
 COMMENT ON COLUMN gapwmc_850_header.f20 IS '檔案第 20 欄; 用途待確認';
 COMMENT ON COLUMN gapwmc_850_header.f21 IS '檔案第 21 欄; 用途待確認';
 COMMENT ON COLUMN gapwmc_850_header.f22 IS '檔案第 22 欄; 用途待確認';
 COMMENT ON COLUMN gapwmc_850_header.f23 IS '檔案第 23 欄; 用途待確認';
-COMMENT ON COLUMN gapwmc_850_header.f24_vendor_name IS '檔案第 24 欄; 850 N1*MF N102 Manufacturing Vendor Name, AN 1/60 (Gap 說明長度 35); 範例值: NINGBO LIGHT (HK) CO LIMITED';
-COMMENT ON COLUMN gapwmc_850_header.f25_vendor_number IS '檔案第 25 欄; 850 N1*MF N104 Manufacturing Vendor Number, AN 2/80 (Gap 說明長度 10); 範例值: 700084780';
+COMMENT ON COLUMN gapwmc_850_header.f24 IS '檔案第 24 欄; 用途待確認 (舊樣本此欄位曾是廠商名稱, 2026-09 新樣本已搬到 f11, 見 注意事項.md)';
+COMMENT ON COLUMN gapwmc_850_header.f25 IS '檔案第 25 欄; 用途待確認 (舊樣本此欄位曾是廠商編號, 2026-09 新樣本已搬到 f12)';
 COMMENT ON COLUMN gapwmc_850_header.f26 IS '檔案第 26 欄; 用途待確認';
 COMMENT ON COLUMN gapwmc_850_header.f27 IS '檔案第 27 欄; 用途待確認';
 COMMENT ON COLUMN gapwmc_850_header.f28 IS '檔案第 28 欄; 用途待確認';
 COMMENT ON COLUMN gapwmc_850_header.f29 IS '檔案第 29 欄; 用途待確認';
 COMMENT ON COLUMN gapwmc_850_header.f30 IS '檔案第 30 欄; 用途待確認';
-COMMENT ON COLUMN gapwmc_850_header.f31_country_of_origin IS '檔案第 31 欄; 850 N1*CT N102 Origin Country, 2 碼國家代碼; 範例值: ID';
-COMMENT ON COLUMN gapwmc_850_header.f32_order_status IS '檔案第 32 欄; 850 PID*X*63 PID05 Order Status Description; 規格列 APPROVED / COMPLETED, 850 範例檔另有 ACTIVE / CANCELLED; 範例值: ACTIVE';
+COMMENT ON COLUMN gapwmc_850_header.f31 IS '檔案第 31 欄; 用途待確認 (舊樣本此欄位曾是產地國別, 2026-09 新樣本已搬到 f18)';
+COMMENT ON COLUMN gapwmc_850_header.f32 IS '檔案第 32 欄; 用途待確認 (舊樣本此欄位曾是訂單狀態, 2026-09 新樣本已搬到 f13)';
 COMMENT ON COLUMN gapwmc_850_header.f33 IS '檔案第 33 欄; 用途待確認';
 COMMENT ON COLUMN gapwmc_850_header.f34 IS '檔案第 34 欄; 用途待確認';
 COMMENT ON COLUMN gapwmc_850_header.f35 IS '檔案第 35 欄; 用途待確認';
@@ -765,7 +790,25 @@ COMMENT ON COLUMN gapwmc_850_header.f42 IS '檔案第 42 欄; 用途待確認';
 COMMENT ON COLUMN gapwmc_850_header.f43 IS '檔案第 43 欄; 用途待確認';
 COMMENT ON COLUMN gapwmc_850_header.f44 IS '檔案第 44 欄; 用途待確認';
 COMMENT ON COLUMN gapwmc_850_header.f45_in_dc_date IS '檔案第 45 欄; 850 DTM*996 In DC Date (Due Date); 範例中 DTM*002 In Store Date 同一天, 待確認. 日期原始值 (YYYYMMDD 或 YYYYMMDDHHMISS); 查詢時用 to_date(left(欄位, 8), ''YYYYMMDD'') 轉換; 範例值: 20260925000000';
-COMMENT ON COLUMN gapwmc_850_header.f46_po_creation_date IS '檔案第 46 欄; 850 DTM*ZZZ PO Creation Date (Set Up date). 日期原始值 (YYYYMMDD 或 YYYYMMDDHHMISS); 查詢時用 to_date(left(欄位, 8), ''YYYYMMDD'') 轉換; 範例值: 20260528';
+COMMENT ON COLUMN gapwmc_850_header.f46_po_creation_date IS '檔案第 46 欄; 850 DTM*ZZZ PO Creation Date (Set Up date). 日期原始值 (YYYYMMDD 或 YYYYMMDDHHMISS); 查詢時用 to_date(left(欄位, 8), ''YYYYMMDD'') 轉換; 範例值: 20260528 (舊樣本) / 20260528000000 (2026-09 新樣本)';
+COMMENT ON COLUMN gapwmc_850_header.f47 IS '檔案第 47 欄; 2026-09 doc/new_850 新增欄位, 用途待確認, 樣本值皆為空';
+COMMENT ON COLUMN gapwmc_850_header.f48 IS '檔案第 48 欄; 2026-09 doc/new_850 新增欄位, 用途待確認, 樣本值皆為空';
+COMMENT ON COLUMN gapwmc_850_header.f49 IS '檔案第 49 欄; 2026-09 doc/new_850 新增欄位, 用途待確認, 樣本值皆為空';
+COMMENT ON COLUMN gapwmc_850_header.f50 IS '檔案第 50 欄; 2026-09 doc/new_850 新增欄位, 用途待確認, 樣本值皆為空';
+COMMENT ON COLUMN gapwmc_850_header.f51 IS '檔案第 51 欄; 2026-09 doc/new_850 新增欄位, 用途待確認, 樣本值皆為空';
+COMMENT ON COLUMN gapwmc_850_header.f52 IS '檔案第 52 欄; 2026-09 doc/new_850 新增欄位, 用途待確認, 樣本值皆為空';
+COMMENT ON COLUMN gapwmc_850_header.f53 IS '檔案第 53 欄; 2026-09 doc/new_850 新增欄位, 用途待確認, 樣本值皆為空';
+COMMENT ON COLUMN gapwmc_850_header.f54 IS '檔案第 54 欄; 2026-09 doc/new_850 新增欄位, 用途待確認, 樣本值皆為空';
+COMMENT ON COLUMN gapwmc_850_header.f55 IS '檔案第 55 欄; 2026-09 doc/new_850 新增欄位, 用途待確認, 樣本值皆為空';
+COMMENT ON COLUMN gapwmc_850_header.f56 IS '檔案第 56 欄; 2026-09 doc/new_850 新增欄位, 用途待確認, 樣本值皆為空';
+COMMENT ON COLUMN gapwmc_850_header.f57 IS '檔案第 57 欄; 2026-09 doc/new_850 新增欄位, 用途待確認, 樣本值皆為空';
+COMMENT ON COLUMN gapwmc_850_header.f58 IS '檔案第 58 欄; 2026-09 doc/new_850 新增欄位, 用途待確認, 樣本值皆為空';
+COMMENT ON COLUMN gapwmc_850_header.f59 IS '檔案第 59 欄; 2026-09 doc/new_850 新增欄位, 用途待確認, 樣本值皆為空';
+COMMENT ON COLUMN gapwmc_850_header.f60 IS '檔案第 60 欄; 2026-09 doc/new_850 新增欄位, 用途待確認, 樣本值皆為空';
+COMMENT ON COLUMN gapwmc_850_header.f61 IS '檔案第 61 欄; 2026-09 doc/new_850 新增欄位, 用途待確認, 樣本值皆為空';
+COMMENT ON COLUMN gapwmc_850_header.f62 IS '檔案第 62 欄; 2026-09 doc/new_850 新增欄位, 用途待確認, 樣本值皆為空';
+COMMENT ON COLUMN gapwmc_850_header.f63 IS '檔案第 63 欄; 2026-09 doc/new_850 新增欄位, 用途待確認, 樣本值皆為空';
+COMMENT ON COLUMN gapwmc_850_header.f64 IS '檔案第 64 欄; 2026-09 doc/new_850 新增欄位, 用途待確認, 樣本值皆為空';
 
 CREATE TABLE IF NOT EXISTS gapwmc_850_detail (
     id                           BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -841,6 +884,10 @@ CREATE TABLE IF NOT EXISTS gapwmc_850_detail (
     f69                          VARCHAR(255),
     f70                          VARCHAR(255),
     f71_product_type             VARCHAR(2),
+    f72                          VARCHAR(255),
+    f73                          VARCHAR(255),
+    f74                          VARCHAR(255),
+    f75                          VARCHAR(255),
     created_at                   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -920,6 +967,10 @@ COMMENT ON COLUMN gapwmc_850_detail.f68 IS '檔案第 68 欄; 用途待確認';
 COMMENT ON COLUMN gapwmc_850_detail.f69 IS '檔案第 69 欄; 用途待確認';
 COMMENT ON COLUMN gapwmc_850_detail.f70 IS '檔案第 70 欄; 用途待確認';
 COMMENT ON COLUMN gapwmc_850_detail.f71_product_type IS '檔案第 71 欄; 推測為 850 PO113 Product Type Code (PO112=TP): 0 = Bulk, 1 = Pack; 待確認; 範例值: 0';
+COMMENT ON COLUMN gapwmc_850_detail.f72 IS '檔案第 72 欄; 2026-09 doc/new_850 新增欄位, 用途待確認, 樣本值皆為空';
+COMMENT ON COLUMN gapwmc_850_detail.f73 IS '檔案第 73 欄; 2026-09 doc/new_850 新增欄位, 用途待確認, 樣本值皆為空';
+COMMENT ON COLUMN gapwmc_850_detail.f74 IS '檔案第 74 欄; 2026-09 doc/new_850 新增欄位, 用途待確認, 樣本值皆為空';
+COMMENT ON COLUMN gapwmc_850_detail.f75 IS '檔案第 75 欄; 2026-09 doc/new_850 新增欄位, 用途待確認, 樣本值皆為空';
 
 CREATE TABLE IF NOT EXISTS gapwmc_850_carton (
     id                           BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,

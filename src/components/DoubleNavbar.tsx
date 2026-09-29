@@ -1,10 +1,10 @@
 import { ActionIcon, Avatar, Collapse, Indicator, Text, Tooltip, UnstyledButton, useComputedColorScheme, useMantineColorScheme } from '@mantine/core';
-import { IconBell, IconChevronDown, IconChevronUp, IconFileText, IconHome, IconMenu2, IconPencil, IconUser } from '@tabler/icons-react';
+import { IconBell, IconChevronDown, IconChevronUp, IconFileText, IconHome, IconLogout, IconMenu2, IconPencil, IconUser } from '@tabler/icons-react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { useEffect, useState } from 'react';
 import { BsMoonStarsFill } from 'react-icons/bs';
 import { IoSunnySharp } from 'react-icons/io5';
-import { NavLink } from 'react-router-dom';
+import { NavLink, useNavigate } from 'react-router-dom';
 import classes from './DoubleNavbar.module.css';
 
 export const ICON_RAIL_WIDTH = 60;
@@ -29,8 +29,8 @@ export const SECTIONS: NavSection[] = [
 		label: 'Open Deals', items: [
 			{ label: '貨品主檔', countCommand: 'count_832_items', path: '/item-master' },
 			{ label: '收貨明細', countCommand: 'count_850_receipts', path: '/receiving' },
-			{ label: 'Purchases', count: 29, path: '/deals/open/purchases' },
-			{ label: 'Refinances', count: 4, path: '/deals/open/refinances' }
+			{ label: '出貨作業', count: 29, path: '/deals/open/purchases' },
+			{ label: '庫存查詢', count: 4, path: '/deals/open/refinances' }
 		]
 	},
 	{ label: 'Completed Deals', items: [] },
@@ -52,6 +52,11 @@ interface DoubleNavbarProps {
 }
 
 export function DoubleNavbar({ panelOpened, onTogglePanel, onNavigate }: DoubleNavbarProps) {
+	const navigate = useNavigate();
+	const handleLogout = () => {
+		onNavigate?.();
+		navigate('/');
+	};
 	const { toggleColorScheme } = useMantineColorScheme();
 	const colorScheme = useComputedColorScheme();
 	const [activeIcon, setActiveIcon] = useState('home');
@@ -111,6 +116,11 @@ export function DoubleNavbar({ panelOpened, onTogglePanel, onNavigate }: DoubleN
 					</UnstyledButton>}
 				{railIcons}
 			</div>
+			<Tooltip label='登出' position='right' withArrow transitionProps={{ duration: 0 }}>
+				<UnstyledButton onClick={handleLogout} className={classes.railButton} aria-label='登出'>
+					<IconLogout size={22} stroke={1.8} />
+				</UnstyledButton>
+			</Tooltip>
 			<Indicator position='bottom-end' color='green' size={10} offset={5} withBorder className={classes.avatar}>
 				<Avatar radius='xl' size={32} color='white' variant='outline' />
 			</Indicator>

@@ -38,6 +38,18 @@ function detectType(lines) {
   throw new Error(`無法判斷檔案類型 (第一行應為 Customer_Code|... 或 RCPHDR|...)`);
 }
 
+const IM_STATUS_BY_KEYWORD = [
+  [/_Add_/i, 'ADD'],
+  [/_Update_/i, 'UPDATE'],
+  [/_Delete_/i, 'DELETE'],
+];
+
+function detectImStatus(sourceFile) {
+  const match = IM_STATUS_BY_KEYWORD.find(([re]) => re.test(sourceFile));
+  if (!match) throw new Error(`檔名無法判斷事件類型 (應含 Add/Update/Delete): ${sourceFile}`);
+  return match[1];
+}
+
 async function tableColumns(client, table) {
   const { rows } = await client.query(
     `SELECT column_name FROM information_schema.columns
@@ -58,6 +70,7 @@ async function insert(client, table, cols, values) {
 }
 
 async function importIm(client, lines, sourceFile) {
+  const status = detectImStatus(sourceFile);
   const header = lines[0].split('|');
   const tableCols = await tableColumns(client, IM_TABLE);
   const cols = header.map(snake);
@@ -70,7 +83,12 @@ async function importIm(client, lines, sourceFile) {
     if (fields.length !== header.length) {
       throw new Error(`第 ${i + 2} 行有 ${fields.length} 欄, 應為 ${header.length} 欄`);
     }
-    await insert(client, IM_TABLE, ['source_file', 'line_no', ...cols], [sourceFile, i + 1, ...fields.map(toNull)]);
+    await insert(
+      client,
+      IM_TABLE,
+      ['source_file', 'line_no', 'status', ...cols],
+      [sourceFile, i + 1, status, ...fields.map(toNull)]
+    );
   }
   return { [IM_TABLE]: rows.length };
 }

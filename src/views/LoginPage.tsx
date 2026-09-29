@@ -12,7 +12,7 @@ export function LoginPage() {
     if (values.email === 'admin@example.com' && values.password === '123456') {
       notifications.show({
         title: '登入成功',
-        message: '歡迎回來！您離夢想又更近一步了！',
+        message: '歡迎登入gap開發系統！',
         color: 'blue'
       });
       

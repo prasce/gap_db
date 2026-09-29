@@ -100,7 +100,7 @@ import {
               className={classes.link}
               onClick={() => navigate('/forgot-password')}
             >
-              忘記密碼？
+            
             </Anchor>
           </Group>
         </form>

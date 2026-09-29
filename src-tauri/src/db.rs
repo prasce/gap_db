@@ -207,10 +207,10 @@ const RECEIPT_850_COLUMNS: [(&str, &str); 18] = [
   ("h.f03_receipt_id", "f03_receipt_id"),
   ("h.f04_receipt_id_type", "f04_receipt_id_type"),
   ("h.f05_receipt_type", "f05_receipt_type"),
-  ("h.f24_vendor_name", "f24_vendor_name"),
-  ("h.f25_vendor_number", "f25_vendor_number"),
-  ("h.f31_country_of_origin", "f31_country_of_origin"),
-  ("h.f32_order_status", "f32_order_status"),
+  ("h.f11_vendor_name", "f11_vendor_name"),
+  ("h.f12_vendor_number", "f12_vendor_number"),
+  ("h.f18_country_of_origin", "f18_country_of_origin"),
+  ("h.f13_order_status", "f13_order_status"),
   ("h.f45_in_dc_date", "f45_in_dc_date"),
   ("h.f46_po_creation_date", "f46_po_creation_date"),
   ("d.f04_line_number", "f04_line_number"),
@@ -236,10 +236,10 @@ pub async fn query_850_receipts(filter: ReceiptFilter) -> Result<Page, String> {
      WHERE {} AND {} AND {} AND {}
      ORDER BY h.id, d.id",
     ilike(1, "h.f06_po_number"),
-    ilike(2, "h.f24_vendor_name"),
+    ilike(2, "h.f11_vendor_name"),
     // 商品編號被拆成前 8 碼與最後一碼; 接起來比對, 輸入 8 碼或完整 9 碼都能找到
     ilike(3, "(d.f05_item_number || coalesce(d.f26_item_last_digit, ''))"),
-    ilike(4, "h.f32_order_status"),
+    ilike(4, "h.f13_order_status"),
   );
   query_page(
     "d.id",

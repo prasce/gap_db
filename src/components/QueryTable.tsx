@@ -25,13 +25,15 @@ export function QueryTable({ command, columns, filters }: QueryTableProps) {
 	// 只採用最後一次查詢的結果, 避免較慢回來的舊結果蓋掉新結果
 	const latestSearch = useRef(0);
 
-	async function search() {
+	// overrideFilter: 重置時要用清空後的條件立即查詢, 不能等 setFilter 的 state 更新才讀得到
+	async function search(overrideFilter?: Record<string, string>) {
 		const searchId = ++latestSearch.current;
 		setLoading(true);
 		setError(undefined);
 		try {
+			const source = overrideFilter ?? filter;
 			// 空字串代表不限制
-			const params = Object.fromEntries(filters.map(f => [f, filter[f]?.trim() || null]));
+			const params = Object.fromEntries(filters.map(f => [f, source[f]?.trim() || null]));
 			const page = await invoke<Page>(command, { filter: params });
 			if (searchId !== latestSearch.current) return;
 			setItems(page.items);
@@ -42,6 +44,12 @@ export function QueryTable({ command, columns, filters }: QueryTableProps) {
 		} finally {
 			if (searchId === latestSearch.current) setLoading(false);
 		}
+	}
+
+	function reset() {
+		const empty = Object.fromEntries(filters.map(f => [f, '']));
+		setFilter(empty);
+		search(empty);
 	}
 
 	useEffect(() => {
@@ -62,10 +70,14 @@ export function QueryTable({ command, columns, filters }: QueryTableProps) {
 		<Group mb='md' gap='sm'>
 			{filters.map(field =>
 				<TextInput key={field} size='xs' w={160} placeholder={`請輸入:${field}`} value={filter[field] ?? ''}
-					onChange={e => setFilter(prev => ({ ...prev, [field]: e.currentTarget.value }))}
+					onChange={e => {
+						const value = e.currentTarget.value;
+						setFilter(prev => ({ ...prev, [field]: value }));
+					}}
 					onKeyDown={e => e.key === 'Enter' && !loading && search()} />
 			)}
-			<Button size='xs' w={80} onClick={search} loading={loading}>查詢</Button>
+			<Button size='xs' w={80} onClick={() => search()} loading={loading}>查詢</Button>
+			<Button size='xs' w={80} color='gapBlue' onClick={reset} disabled={loading}>重置</Button>
 		</Group>
 
 		{error && <Alert color='red' mb='md'>{error}</Alert>}
