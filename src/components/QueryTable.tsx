@@ -76,7 +76,7 @@ export function QueryTable({ command, columns, filters }: QueryTableProps) {
 					}}
 					onKeyDown={e => e.key === 'Enter' && !loading && search()} />
 			)}
-			<Button size='xs' w={80} color='gapBlue' onClick={() => search()} loading={loading}>查詢</Button>
+			<Button size='xs' w={80} color='gapBlue' onClick={() => search()} disabled={loading}>查詢</Button>
 			<Button size='xs' w={80} color='gapBlue' onClick={reset} disabled={loading}>重置</Button>
 		</Group>
 
