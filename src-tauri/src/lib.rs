@@ -17,6 +17,7 @@ use tauri_plugin_window_state;
 
 mod db;
 mod tray_icon;
+mod uat;
 mod utils;
 
 use tray_icon::{create_tray_icon, tray_update_lang, TrayState};
@@ -78,6 +79,9 @@ pub fn run() {
       db::count_832_items,
       db::query_850_receipts,
       db::count_850_receipts,
+      db::login,
+      db::change_password,
+      uat::run_uat_test,
     ])
     // allow only one instance and propagate args and cwd to existing instance
     .plugin(tauri_plugin_single_instance::init(|app, args, cwd| {

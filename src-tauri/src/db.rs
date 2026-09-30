@@ -8,7 +8,7 @@ pub fn load_env() {
   let _ = dotenvy::from_path(concat!(env!("CARGO_MANIFEST_DIR"), "/../.env"));
 }
 
-async fn connect() -> Result<Client, String> {
+pub(crate) async fn connect() -> Result<Client, String> {
   let mut config = tokio_postgres::Config::new();
   config
     .host(&env::var("PGHOST").unwrap_or_else(|_| "localhost".into()))
@@ -46,7 +46,7 @@ pub struct RowData {
 #[derive(Debug, Serialize)]
 pub struct Page {
   items: Vec<RowData>,
-  total: i64,
+  pub(crate) total: i64,
   limit: i64,
 }
 
@@ -129,14 +129,34 @@ async fn count(sql: &str) -> Result<i64, String> {
 // 查詢條件; 空值代表不限制
 #[derive(Debug, Default, Deserialize)]
 pub struct ItemFilter {
-  customer_code: Option<String>,
-  sku: Option<String>,
-  barcode: Option<String>,
-  long_description: Option<String>,
+  pub(crate) customer_code: Option<String>,
+  pub(crate) sku: Option<String>,
+  pub(crate) barcode: Option<String>,
+  pub(crate) long_description: Option<String>,
+  pub(crate) status: Option<String>,
+  // "true" 時 (僅限管理員畫面會送出此值): 顯示每個 SKU 的完整歷史列 (含 status = DELETE);
+  // 其餘情況只顯示每個 SKU 最新一筆且 status <> DELETE 的列 (一般使用者畫面); 見 SKU_IDENTITY_KEY 說明
+  pub(crate) include_deleted: Option<String>,
 }
 
-// gapwmc_832_item 的 26 個資料欄; 與 src/views/ItemMasterView.tsx 的 COLUMNS 相同順序
-const ITEM_832_COLUMNS: [&str; 26] = [
+// 832 SKU 唯一識別鍵 (2026-09-30 定案, 見 task.md Phase 1-A-1): customer_code + 完整 9 碼品號 (sku 8 碼 +
+// long_description 第 1 碼) + item_size (實際內容為顏色) + item_colour (實際內容為尺寸)。
+// gapwmc_832_item 為 append-only (每次匯入一律新增列, 不覆寫不刪除, 見 注意事項.md), 所以這組鍵不是資料庫層級的唯一鍵,
+// 只用來在查詢端分組取「這個 SKU 目前最新一筆 status」。
+pub(crate) const SKU_IDENTITY_KEY: &str = "customer_code, sku, left(long_description, 1), item_size, item_colour";
+
+// 確認 account 是否為 role='admin' 的員工; account 為 None 或查無此人一律視為非管理員
+pub(crate) async fn is_admin(client: &Client, account: Option<&str>) -> Result<bool, String> {
+  let Some(account) = account else { return Ok(false) };
+  let row = client
+    .query_opt("SELECT 1 FROM employees WHERE account = $1 AND role = 'admin'", &[&account])
+    .await
+    .map_err(|e| format!("權限查詢失敗: {e}"))?;
+  Ok(row.is_some())
+}
+
+// gapwmc_832_item 的 27 個資料欄; 與 src/views/ItemMasterView.tsx 的 COLUMNS 相同順序
+const ITEM_832_COLUMNS: [&str; 27] = [
   "customer_code",
   "sku",
   "item_desc",
@@ -163,17 +183,48 @@ const ITEM_832_COLUMNS: [&str; 26] = [
   "udf4",
   "udf5",
   "udf6",
+  "status",
 ];
 
 #[tauri::command]
-pub async fn query_832_items(filter: ItemFilter, page: i64, page_size: i64) -> Result<Page, String> {
+pub async fn query_832_items(
+  filter: ItemFilter,
+  page: i64,
+  page_size: i64,
+  account: Option<String>,
+) -> Result<Page, String> {
   let columns: Vec<(&str, &'static str)> = ITEM_832_COLUMNS.iter().map(|&c| (c, c)).collect();
+  // show_deleted=false (一般使用者): 每個 SKU 只取最新一筆, 且該筆 status 不是 DELETE 才顯示
+  // show_deleted=true (管理員勾選「顯示已刪除」): 顯示全部歷史列, 不做任何篩選
+  // 前端只是用 role 決定要不要「顯示」這個勾選框, 送出的 include_deleted 本身不可信任, 一定要在後端重新確認
+  // account 對應的員工真的是 admin 才放行, 否則就算送出 include_deleted=true 也視為一般使用者查詢
+  let requested_deleted = filter.include_deleted.as_deref() == Some("true");
+  let show_deleted = if requested_deleted {
+    let client = connect().await?;
+    if !is_admin(&client, account.as_deref()).await? {
+      return Err("權限不足，無法查看已刪除的 SKU".to_string());
+    }
+    true
+  } else {
+    false
+  };
+  let from_table = if show_deleted {
+    "gapwmc_832_item".to_string()
+  } else {
+    format!(
+      "(SELECT DISTINCT ON ({SKU_IDENTITY_KEY}) * FROM gapwmc_832_item \
+        ORDER BY {SKU_IDENTITY_KEY}, created_at DESC) latest"
+    )
+  };
+  // show_deleted 是後端算出的布林值 (不是使用者輸入的文字), 直接嵌入 SQL 常值不會有注入風險
+  let hide_deleted_clause = if show_deleted { "TRUE" } else { "status IS DISTINCT FROM 'DELETE'" };
   let from_where = format!(
-    "FROM gapwmc_832_item WHERE {} AND {} AND {} AND {} ORDER BY id",
+    "FROM {from_table} WHERE {} AND {} AND {} AND {} AND {} AND {hide_deleted_clause} ORDER BY id",
     ilike(1, "customer_code"),
     ilike(2, "sku"),
     ilike(3, "barcode"),
     ilike(4, "long_description"),
+    ilike(5, "status"),
   );
   query_page(
     "id",
@@ -184,6 +235,7 @@ pub async fn query_832_items(filter: ItemFilter, page: i64, page_size: i64) -> R
       &filter.sku,
       &filter.barcode,
       &filter.long_description,
+      &filter.status,
     ],
     page,
     page_size,
@@ -267,4 +319,74 @@ pub async fn query_850_receipts(filter: ReceiptFilter, page: i64, page_size: i64
 #[tauri::command]
 pub async fn count_850_receipts() -> Result<i64, String> {
   count("SELECT count(*) FROM gapwmc_850_detail").await
+}
+
+// ---------------------------------------------------------------------
+// employees: 帳號權限管理 (admin / user)
+// ---------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct LoginRequest {
+  account: String,
+  password: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct Employee {
+  account: String,
+  role: String,
+  must_change_password: bool,
+}
+
+// 用 pgcrypto 的 crypt() 直接在 SQL 端比對 bcrypt 雜湊, 密碼明碼只在這次查詢的參數裡, 不落地存放
+#[tauri::command]
+pub async fn login(req: LoginRequest) -> Result<Employee, String> {
+  let client = connect().await?;
+  let row = client
+    .query_opt(
+      "SELECT account, role, must_change_password FROM employees \
+       WHERE account = $1 AND password_hash = crypt($2, password_hash)",
+      &[&req.account, &req.password],
+    )
+    .await
+    .map_err(|e| format!("登入查詢失敗: {e}"))?;
+  if let Some(row) = row {
+    return Ok(Employee {
+      account: row.get("account"),
+      role: row.get("role"),
+      must_change_password: row.get("must_change_password"),
+    });
+  }
+  // 帳號不存在或密碼錯誤都會走到這裡; 帳號不存在時額外跑一次 crypt(), 讓回應時間接近「帳號存在但密碼錯」的情況,
+  // 避免單純用回應時間差就能猜出哪些帳號存在 (bcrypt 刻意很慢, 沒跑到的話回應會明顯快很多)
+  let _ = client.query_one("SELECT crypt($1, gen_salt('bf'))", &[&req.password]).await;
+  Err("帳號或密碼錯誤".to_string())
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChangePasswordRequest {
+  account: String,
+  old_password: String,
+  new_password: String,
+}
+
+#[tauri::command]
+pub async fn change_password(req: ChangePasswordRequest) -> Result<(), String> {
+  if req.new_password.len() < 6 {
+    return Err("新密碼至少需要 6 碼".to_string());
+  }
+  let client = connect().await?;
+  let updated = client
+    .execute(
+      "UPDATE employees SET password_hash = crypt($3, gen_salt('bf')), must_change_password = false \
+       WHERE account = $1 AND password_hash = crypt($2, password_hash)",
+      &[&req.account, &req.old_password, &req.new_password],
+    )
+    .await
+    .map_err(|e| format!("更新密碼失敗: {e}"))?;
+  if updated == 0 {
+    return Err("帳號或原密碼錯誤".to_string());
+  }
+  Ok(())
 }

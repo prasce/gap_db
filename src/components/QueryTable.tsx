@@ -1,23 +1,42 @@
 // 查詢頁共用版面: 查詢框 + 查詢按鈕 + 可勾選的資料表 + 分頁
 // command 為 src-tauri/src/db.rs 中回傳 Page 的 Tauri 指令; columns 須與該指令的欄位清單同順序
-import { Alert, Button, Checkbox, Group, Loader, Pagination, Select, Table, Text, TextInput } from '@mantine/core';
+import { Alert, Badge, Button, Checkbox, Group, Loader, Modal, Pagination, Select, Stack, Table, Text, TextInput } from '@mantine/core';
 import { invoke, isTauri } from '@tauri-apps/api/core';
+import { notifications } from '@mantine/notifications';
 import { useEffect, useRef, useState } from 'react';
+import { useAuth } from '../auth/AuthContext';
 
 type Row = { id: number } & Record<string, string | null>;
 // total = 符合條件的總筆數; items 最多 limit 筆
 type Page = { items: Row[], total: number, limit: number };
 
+// 與 src-tauri/src/uat.rs 的 UatResult/UatItem 相同格式
+type UatItemStatus = 'pass' | 'fail' | 'skip';
+interface UatItem { name: string, status: UatItemStatus, detail: string }
+interface UatResult { id: number, page: string, overall_status: UatItemStatus, items: UatItem[] }
+
 const PAGE_SIZE_OPTIONS = ['15', '25', '50', '100'];
+const UAT_STATUS_LABEL: Record<UatItemStatus, { label: string, color: string }> = {
+	pass: { label: '通過', color: 'green' },
+	fail: { label: '失敗', color: 'red' },
+	skip: { label: '略過', color: 'gray' },
+};
 
 interface QueryTableProps {
 	command: string,
 	columns: readonly string[],
 	// 查詢條件名稱, 對應指令參數 filter 的欄位
-	filters: readonly string[]
+	filters: readonly string[],
+	// 部分條件改用下拉選單而非文字輸入; key 須為 filters 其中之一, value 為選項清單 (value 為空字串代表不限制)
+	selectFilters?: Record<string, readonly { value: string, label: string }[]>
+	// 部分條件改用勾選框而非文字輸入; key 須為 filters 其中之一, 勾選時送出 'true', 未勾選時送出空字串 (不限制)
+	checkboxFilters?: Record<string, { label: string }>
+	// 顯示「UAT 測試」按鈕並指定送給 run_uat_test 指令的頁面代碼; 不傳則不顯示按鈕
+	uatPage?: 'item_master' | 'receiving'
 }
 
-export function QueryTable({ command, columns, filters }: QueryTableProps) {
+export function QueryTable({ command, columns, filters, selectFilters, checkboxFilters, uatPage }: QueryTableProps) {
+	const { employee } = useAuth();
 	const [filter, setFilter] = useState<Record<string, string>>(() => Object.fromEntries(filters.map(f => [f, ''])));
 	const [items, setItems] = useState<Row[]>([]);
 	const [total, setTotal] = useState(0);
@@ -26,8 +45,23 @@ export function QueryTable({ command, columns, filters }: QueryTableProps) {
 	const [selected, setSelected] = useState<Set<number>>(new Set());
 	const [loading, setLoading] = useState(false);
 	const [error, setError] = useState<string>();
+	const [uatRunning, setUatRunning] = useState(false);
+	const [uatResult, setUatResult] = useState<UatResult>();
 	// 只採用最後一次查詢的結果, 避免較慢回來的舊結果蓋掉新結果
 	const latestSearch = useRef(0);
+
+	async function runUatTest() {
+		if (!uatPage) return;
+		setUatRunning(true);
+		try {
+			const result = await invoke<UatResult>('run_uat_test', { page: uatPage, account: employee?.account ?? null });
+			setUatResult(result);
+		} catch (e) {
+			notifications.show({ title: 'UAT 測試執行失敗', message: String(e), color: 'red' });
+		} finally {
+			setUatRunning(false);
+		}
+	}
 
 	// overridePage/overridePageSize: 換頁或改變每頁筆數時要用新值立即查詢, 不能等對應 state 更新才讀得到
 	async function search(overrideFilter?: Record<string, string>, overridePage?: number, overridePageSize?: number) {
@@ -42,6 +76,9 @@ export function QueryTable({ command, columns, filters }: QueryTableProps) {
 				filter: params,
 				page: overridePage ?? currentPage,
 				pageSize: overridePageSize ?? pageSize,
+				// 只有 query_832_items 會用到 (後端驗證 include_deleted 只有真的 admin 帳號才放行);
+				// query_850_receipts 沒有宣告這個參數, 多送這個 key 會被忽略, 不影響其他頁面
+				account: employee?.account ?? null,
 			});
 			if (searchId !== latestSearch.current) return;
 			setItems(page.items);
@@ -94,21 +131,60 @@ export function QueryTable({ command, columns, filters }: QueryTableProps) {
 		return next;
 	});
 
+	const checkboxFields = filters.filter(field => checkboxFilters?.[field]);
+
 	return <>
-		<Group mb='md' gap='sm'>
-			{filters.map(field =>
-				<TextInput key={field} size='xs' w={160} placeholder={`請輸入:${field}`} value={filter[field] ?? ''}
+		<Group mb='sm' gap='sm'>
+			{filters.map(field => {
+				if (checkboxFilters?.[field]) return null;
+				const options = selectFilters?.[field];
+				if (options) {
+					return <Select key={field} size='xs' w={160} data={options as { value: string, label: string }[]}
+						value={filter[field] ?? ''} allowDeselect={false}
+						onChange={value => setFilter(prev => ({ ...prev, [field]: value ?? '' }))} />;
+				}
+				return <TextInput key={field} size='xs' w={160} placeholder={`請輸入:${field}`} value={filter[field] ?? ''}
 					onChange={e => {
 						const value = e.currentTarget.value;
 						setFilter(prev => ({ ...prev, [field]: value }));
 					}}
-					onKeyDown={e => e.key === 'Enter' && applyFilter()} />
-			)}
+					onKeyDown={e => e.key === 'Enter' && applyFilter()} />;
+			})}
 			{/* 不用 disabled={loading} 卡按鈕: 本地查詢通常一瞬間就回來, 切換 disabled 樣式的重繪反而造成按鈕看起來在抖動;
 			    連續點擊的正確性已經靠 search() 裡的 latestSearch 只採用最後一次結果來保護 */}
 			<Button size='xs' w={80} color='gapBlue' onClick={applyFilter}>查詢</Button>
 			<Button size='xs' w={80} color='gapBlue' onClick={reset}>重置</Button>
+			{uatPage &&
+				<Button size='xs' color='red' ml='auto' loading={uatRunning} onClick={runUatTest}>UAT 測試</Button>}
 		</Group>
+
+		<Modal opened={!!uatResult} onClose={() => setUatResult(undefined)}
+			title={`UAT 測試結果${uatResult ? ' - ' + UAT_STATUS_LABEL[uatResult.overall_status].label : ''}`} size='lg'>
+			<Stack gap='sm'>
+				{uatResult?.items.map((item, i) =>
+					<div key={i}>
+						<Group gap='xs' wrap='nowrap'>
+							<Badge size='sm' color={UAT_STATUS_LABEL[item.status].color}>{UAT_STATUS_LABEL[item.status].label}</Badge>
+							<Text size='sm' fw={500}>{item.name}</Text>
+						</Group>
+						{item.detail && <Text size='xs' c='dimmed' ml={4} style={{ whiteSpace: 'pre-wrap' }}>{item.detail}</Text>}
+					</div>)}
+			</Stack>
+		</Modal>
+
+		{checkboxFields.length > 0 &&
+			<Group mb='md' gap='sm'>
+				{checkboxFields.map(field => {
+					const checkbox = checkboxFilters![field]!;
+					return <Checkbox key={field} size='xs' label={checkbox.label} checked={filter[field] === 'true'}
+						onChange={e => {
+							// 要先同步讀出 checked 存成區域變數: e.currentTarget 在 handler 同步執行完就會被 React 清空,
+							// 直接在 setFilter 的 updater function 裡讀 (非同步執行) 會拿到 null 而炸掉
+							const checked = e.currentTarget.checked;
+							setFilter(prev => ({ ...prev, [field]: checked ? 'true' : '' }));
+						}} />;
+				})}
+			</Group>}
 
 		{error && <Alert color='red' mb='md'>{error}</Alert>}
 

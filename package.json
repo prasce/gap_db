@@ -73,6 +73,7 @@
     "sloc": "sloc src src-tauri/src",
     "upgrade": "concurrently \"pnpm up\" \"cd src-tauri && cargo update && cargo clean\"",
     "test": "mocha",
+    "test:unit": "node --test scripts/*.test.mjs",
     "import-wms": "node scripts/import.mjs"
   },
   "eslintConfig": {

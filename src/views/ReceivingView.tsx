@@ -14,5 +14,5 @@ const COLUMNS = [
 const FILTERS = ['po_number', 'vendor_name', 'item_number', 'order_status'] as const;
 
 export default function ReceivingView() {
-	return <QueryTable command='query_850_receipts' columns={COLUMNS} filters={FILTERS} />;
+	return <QueryTable command='query_850_receipts' columns={COLUMNS} filters={FILTERS} uatPage='receiving' />;
 }

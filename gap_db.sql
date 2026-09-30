@@ -999,4 +999,55 @@ COMMENT ON COLUMN gapwmc_850_carton.f06 IS '檔案第 6 欄; 用途待確認';
 COMMENT ON COLUMN gapwmc_850_carton.f07_po_number IS '檔案第 7 欄; PO 號 (850 BEG03); 範例值: 62028556';
 COMMENT ON COLUMN gapwmc_850_carton.f08_line_number IS '檔案第 8 欄; 對應明細 f04_line_number; 範例值: 1';
 
+-- ---------------------------------------------------------------------
+-- 4. employees: 帳號權限管理 (Phase 1 832 test item 002 用: 一般使用者隱藏已刪除 SKU, 管理員可查詢完整歷史)
+--    密碼用 pgcrypto 的 bcrypt (crypt/gen_salt) 雜湊, 不存明碼; 登入驗證直接在 SQL 用 crypt($密碼, password_hash) = password_hash 比對
+-- ---------------------------------------------------------------------
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+CREATE TABLE IF NOT EXISTS employees (
+    id                           BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    account                      VARCHAR(50) NOT NULL UNIQUE,
+    password_hash                VARCHAR(255) NOT NULL,
+    role                         VARCHAR(10) NOT NULL DEFAULT 'user' CHECK (role IN ('admin', 'user')),
+    must_change_password         BOOLEAN NOT NULL DEFAULT false,
+    created_at                   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- must_change_password 為 2026-09-30 新增欄位; 若資料表在此之前已建立, CREATE TABLE IF NOT EXISTS 不會補上, 用以下 ALTER 補齊
+ALTER TABLE employees ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN NOT NULL DEFAULT false;
+
+COMMENT ON TABLE employees IS '帳號權限管理; role 僅 admin / user 兩種';
+COMMENT ON COLUMN employees.account IS '登入帳號 (非 email)';
+COMMENT ON COLUMN employees.password_hash IS 'bcrypt 雜湊值, 由 crypt(密碼, gen_salt(''bf'')) 產生; 不存明碼';
+COMMENT ON COLUMN employees.role IS 'admin: 可查詢 gapwmc_832_item 完整歷史 (含已刪除 SKU); user: 只看得到最新狀態非 DELETE 的 SKU';
+COMMENT ON COLUMN employees.must_change_password IS 'true 時登入後強制要求改密碼才能繼續使用 (change_password 指令改完會設回 false); 預設管理員帳號用這個機制, 避免種子密碼一直沿用';
+
+-- 預設管理員帳號, 僅供本機測試用: 帳號 admin / 密碼 admin123, 登入後會被強制要求立刻改密碼 (must_change_password = true),
+-- 不用擔心這組種子密碼被長期沿用
+INSERT INTO employees (account, password_hash, role, must_change_password)
+VALUES ('admin', crypt('admin123', gen_salt('bf')), 'admin', true)
+ON CONFLICT (account) DO NOTHING;
+
+-- ---------------------------------------------------------------------
+-- 5. uat_runs: 「UAT 測試」按鈕的執行紀錄 (貨品主檔/收貨明細頁面, 見 task.md)
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS uat_runs (
+    id                           BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    page                         VARCHAR(20) NOT NULL,
+    triggered_by                 VARCHAR(50),
+    overall_status               VARCHAR(10) NOT NULL,
+    results                      JSONB NOT NULL,
+    started_at                   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    finished_at                  TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS ix_uat_runs_page ON uat_runs (page, started_at DESC);
+
+COMMENT ON TABLE uat_runs IS 'UAT 測試按鈕的執行紀錄';
+COMMENT ON COLUMN uat_runs.page IS '觸發頁面: item_master (貨品主檔) / receiving (收貨明細)';
+COMMENT ON COLUMN uat_runs.triggered_by IS '觸發帳號, 對應 employees.account';
+COMMENT ON COLUMN uat_runs.overall_status IS '整體結果: pass / fail';
+COMMENT ON COLUMN uat_runs.results IS '逐項測試結果 JSON 陣列: [{name, status, detail}, ...], status 為 pass/fail/skip';
+
 COMMIT;
