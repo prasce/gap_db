@@ -27,6 +27,7 @@ import FallbackAppRender from './views/FallbackErrorBoundary';
 import FallbackSuspense from './views/FallbackSuspense';
 import ItemMasterView from './views/ItemMasterView';
 import ReceivingView from './views/ReceivingView';
+import UatRunsView from './views/UatRunsView';
 import { LoginPage } from './views/LoginPage';
 import { ForgotPassword } from './views/ForgotPassword';
 // if some views are large, you can use lazy loading to reduce the initial app load time
@@ -50,6 +51,7 @@ function MainApp() {
 	const views: View[] = [
 		{ component: ItemMasterView, path: '/item-master', name: '貨品主檔' },
 		{ component: ReceivingView, path: '/receiving', name: '收貨明細' },
+		{ component: UatRunsView, path: '/uat-runs', name: 'uat_runs_recode' },
 		{ component: DealsView, path: '/deals/open/purchases', name: '出貨作業' },
 		{ component: DealsView, path: '/deals/open/refinances', name: '庫存查詢' },
 		{ component: ExampleView, path: '/example-view', name: t('ExampleView') },

@@ -322,6 +322,72 @@ pub async fn count_850_receipts() -> Result<i64, String> {
 }
 
 // ---------------------------------------------------------------------
+// UAT 測試紀錄 (uat_runs), 一次「UAT 測試」按鈕執行一列
+// ---------------------------------------------------------------------
+
+#[derive(Debug, Default, Deserialize)]
+pub struct UatRunFilter {
+  page: Option<String>,
+  triggered_by: Option<String>,
+  overall_status: Option<String>,
+  started_at: Option<String>,
+}
+
+// (SQL 運算式, 別名); 與 src/views/UatRunsView.tsx 的 COLUMNS 相同順序; 時間以台北時區顯示
+const UAT_RUN_COLUMNS: [(&str, &str); 7] = [
+  // 別名不能叫 id: query_page 已固定輸出 id 欄 (列識別), 同名會衝突
+  ("r.id", "run_id"),
+  ("r.page", "page"),
+  ("r.triggered_by", "triggered_by"),
+  ("r.overall_status", "overall_status"),
+  ("to_char(r.started_at AT TIME ZONE 'Asia/Taipei', 'YYYY-MM-DD HH24:MI:SS')", "started_at"),
+  ("to_char(r.finished_at AT TIME ZONE 'Asia/Taipei', 'YYYY-MM-DD HH24:MI:SS')", "finished_at"),
+  // results 是 [{name, status, detail}] 的 JSONB 陣列; 只顯示各狀態筆數, 有失敗項目時附上項目名稱
+  (
+    "SELECT format('通過 %s / 失敗 %s / 略過 %s',
+            count(*) FILTER (WHERE e->>'status' = 'pass'),
+            count(*) FILTER (WHERE e->>'status' = 'fail'),
+            count(*) FILTER (WHERE e->>'status' = 'skip'))
+            || coalesce(' 失敗項目: ' || string_agg(e->>'name', '; ') FILTER (WHERE e->>'status' = 'fail'), '')
+     FROM jsonb_array_elements(r.results) e",
+    "results",
+  ),
+];
+
+#[tauri::command]
+pub async fn query_uat_runs(filter: UatRunFilter, page: i64, page_size: i64) -> Result<Page, String> {
+  let from_where = format!(
+    "FROM uat_runs r
+     WHERE {} AND {} AND {} AND {}
+     ORDER BY r.started_at DESC, r.id DESC",
+    ilike(1, "r.page"),
+    ilike(2, "r.triggered_by"),
+    ilike(3, "r.overall_status"),
+    // 與畫面顯示相同的台北時間字串比對, 輸入 2026-09-30 即可查當天
+    ilike(4, "to_char(r.started_at AT TIME ZONE 'Asia/Taipei', 'YYYY-MM-DD HH24:MI:SS')"),
+  );
+  query_page(
+    "r.id",
+    &UAT_RUN_COLUMNS,
+    &from_where,
+    &[
+      &filter.page,
+      &filter.triggered_by,
+      &filter.overall_status,
+      &filter.started_at,
+    ],
+    page,
+    page_size,
+  )
+  .await
+}
+
+#[tauri::command]
+pub async fn count_uat_runs() -> Result<i64, String> {
+  count("SELECT count(*) FROM uat_runs").await
+}
+
+// ---------------------------------------------------------------------
 // employees: 帳號權限管理 (admin / user)
 // ---------------------------------------------------------------------
 

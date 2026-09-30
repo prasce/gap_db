@@ -79,6 +79,8 @@ pub fn run() {
       db::count_832_items,
       db::query_850_receipts,
       db::count_850_receipts,
+      db::query_uat_runs,
+      db::count_uat_runs,
       db::login,
       db::change_password,
       uat::run_uat_test,

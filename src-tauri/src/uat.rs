@@ -1,8 +1,7 @@
 // 「UAT 測試」按鈕: 貨品主檔/收貨明細頁面用, 讓 user 把測試檔放進指定資料夾後按鈕觸發, 依 task.md 規劃
 //   - 重用 scripts/import.mjs (透過 tauri-plugin-shell 直接執行 `node scripts/import.mjs --replace <file>`), 不在 Rust 重寫一份匯入邏輯
 //   - 832: 掃描 doc/832-uat-test/ 的 .im 檔, 匯入後順便驗證「一般使用者隱藏已刪除 SKU / 管理員可查完整歷史」邏輯
-//   - 850: 掃描 doc/850-SKU existence/ (情境 6) 與 doc/850-scenario-2/3/5-.../ (目前僅驗證匯入成功, 情境 1-5 的比對邏輯待日後有
-//     真正共用同一個 PO# 的測試檔才實作, 見 task.md「UAT 測試按鈕」風險 1)
+//   - 850: 掃描 doc/850-uat-test/ 的 .rc 檔 (SET 01~07), 依檔名順序匯入, 每步比對同一張 PO 的狀態/明細行, 全部通過才整批移到 bak/
 use crate::db;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -79,6 +78,37 @@ async fn run_import(app: &AppHandle, file: &Path) -> Result<String, String> {
   Ok(stdout)
 }
 
+// 把匯入成功的測試檔移到來源資料夾下的 bak/ (不存在就建立), 避免下次按 UAT 測試又重複匯入同一份;
+// bak/ 已有同名檔案時在檔名後加上時間戳 (Unix 秒), 不覆蓋舊檔
+fn move_to_bak(file: &Path) -> Result<PathBuf, String> {
+  let bak = file.parent().ok_or("找不到檔案所在資料夾")?.join("bak");
+  std::fs::create_dir_all(&bak).map_err(|e| format!("建立 bak 資料夾失敗: {e}"))?;
+  let name = file.file_name().ok_or("找不到檔名")?;
+  let mut dest = bak.join(name);
+  if dest.exists() {
+    let secs = std::time::SystemTime::now()
+      .duration_since(std::time::UNIX_EPOCH)
+      .map(|d| d.as_secs())
+      .unwrap_or(0);
+    dest = bak.join(format!("{}.{secs}", name.to_string_lossy()));
+  }
+  std::fs::rename(file, &dest).map_err(|e| format!("移動檔案失敗: {e}"))?;
+  Ok(dest)
+}
+
+// 把 files 移到 bak/ 並產生一筆報告項目; 移動失敗不影響通過判定 (資料已入庫), 只在報告註明
+fn archive_report(name: &str, files: &[&PathBuf], extra_notes: Vec<String>) -> UatItem {
+  let mut notes: Vec<String> = files
+    .iter()
+    .map(|file| match move_to_bak(file) {
+      Ok(dest) => format!("{} -> {}", file_display_name(file), dest.display()),
+      Err(e) => format!("{}: 未能移至 bak: {e}", file_display_name(file)),
+    })
+    .collect();
+  notes.extend(extra_notes);
+  UatItem { name: name.into(), status: "pass".into(), detail: notes.join("\n") }
+}
+
 async fn run_item_master_uat(app: &AppHandle, account: Option<&str>) -> Result<Vec<UatItem>, String> {
   let folder = project_root().join("doc").join("832-uat-test");
   let files = list_files(&folder, "im");
@@ -152,47 +182,204 @@ async fn run_item_master_uat(app: &AppHandle, account: Option<&str>) -> Result<V
     },
   });
 
+  // 全部匯入成功且 832-002 也通過才整批歸檔到 bak/; 任何一項失敗就留在原處, 修正後可以重跑
+  if items.iter().all(|i| i.status != "fail") {
+    let all: Vec<&PathBuf> = files.iter().collect();
+    items.push(archive_report("832 測試檔歸檔", &all, Vec::new()));
+  }
+
   Ok(items)
 }
 
+// 850 UAT 情境 (doc/850-uat-test/ 的 SET 01~07): SET 01~06 是同一張 PO (TEST0001) 依序變化, 必須依檔名順序匯入,
+// 每一步都比對「該 PO 最新一次匯入」的 header 狀態與明細行; SET 07 是另一張 PO, 品號不在 832 (情境 6), 必須觸發警示信
+struct ReceivingCase {
+  set_no: u32,
+  label: &'static str,
+  po: &'static str,
+  status: &'static str,
+  lines: &'static [(&'static str, f64)], // (完整品號 = f05_item_number + f26_item_last_digit, 訂購數量)
+  expect_alert: bool,
+}
+
+const RECEIVING_CASES: [ReceivingCase; 7] = [
+  ReceivingCase { set_no: 1, label: "基準 - PO 生效 (1 行)", po: "TEST0001", status: "ACTIVE", lines: &[("324084338", 114.0)], expect_alert: false },
+  ReceivingCase {
+    set_no: 2,
+    label: "情境 1 - 新增 SKU/Size",
+    po: "TEST0001",
+    status: "ACTIVE",
+    lines: &[("324084338", 114.0), ("323891352", 114.0)],
+    expect_alert: false,
+  },
+  ReceivingCase {
+    set_no: 3,
+    label: "情境 3 - 變更 Item 數量",
+    po: "TEST0001",
+    status: "ACTIVE",
+    lines: &[("324084338", 200.0), ("323891352", 300.0)],
+    expect_alert: false,
+  },
+  ReceivingCase { set_no: 4, label: "情境 2 - 刪除 SKU/Size", po: "TEST0001", status: "ACTIVE", lines: &[("324084338", 200.0)], expect_alert: false },
+  ReceivingCase { set_no: 5, label: "情境 4 - 取消 PO", po: "TEST0001", status: "CANCEL", lines: &[("324084338", 200.0)], expect_alert: false },
+  ReceivingCase { set_no: 6, label: "情境 5 - 重新啟用 PO", po: "TEST0001", status: "ACTIVE", lines: &[("324084338", 200.0)], expect_alert: false },
+  ReceivingCase {
+    set_no: 7,
+    label: "情境 6 - 未收到 Item Master 即收到 DPO",
+    po: "TEST0002",
+    status: "ACTIVE",
+    lines: &[("TEST84338", 114.0), ("TEST91352", 114.0)],
+    expect_alert: true,
+  },
+];
+
+// 檔名開頭 "SET 03 ..." -> 3
+fn parse_set_no(file_name: &str) -> Option<u32> {
+  let digits: String = file_name.strip_prefix("SET ")?.chars().take_while(|c| c.is_ascii_digit()).collect();
+  digits.parse().ok()
+}
+
+// 匯入後比對: 該 PO 最新一次匯入的 header 必須就是這個檔案, 且狀態、明細行 (依檔案順序) 與預期一致; 警示信有無也要符合預期
+async fn verify_receiving_case(case: &ReceivingCase, file_name: &str, stdout: &str) -> Result<(), String> {
+  let client = db::connect().await?;
+  let header = client
+    .query_opt(
+      "SELECT id, source_file, f13_order_status FROM gapwmc_850_header WHERE f06_po_number = $1 \
+       ORDER BY created_at DESC, id DESC LIMIT 1",
+      &[&case.po],
+    )
+    .await
+    .map_err(|e| format!("驗證查詢失敗: {e}"))?
+    .ok_or_else(|| format!("資料庫找不到 PO {}", case.po))?;
+  let header_id: i64 = header.get("id");
+  let source_file: String = header.get("source_file");
+  let status: Option<String> = header.get("f13_order_status");
+  if source_file != file_name {
+    return Err(format!("PO {} 最新一筆是 {source_file}, 不是本檔", case.po));
+  }
+  let status = status.unwrap_or_default();
+  if status.trim() != case.status {
+    return Err(format!("PO {} 狀態應為 {}, 實際為 {}", case.po, case.status, status.trim()));
+  }
+
+  let rows = client
+    .query(
+      "SELECT f05_item_number || coalesce(f26_item_last_digit, '') AS item, f06_order_quantity::text AS qty \
+       FROM gapwmc_850_detail WHERE header_id = $1 ORDER BY id",
+      &[&header_id],
+    )
+    .await
+    .map_err(|e| format!("驗證查詢失敗: {e}"))?;
+  let actual: Vec<(String, f64)> = rows
+    .iter()
+    .map(|r| {
+      let item: String = r.get("item");
+      let qty: String = r.get("qty");
+      (item, qty.parse::<f64>().unwrap_or(f64::NAN))
+    })
+    .collect();
+  let expected: Vec<(String, f64)> = case.lines.iter().map(|(i, q)| (i.to_string(), *q)).collect();
+  let same = actual.len() == expected.len()
+    && actual.iter().zip(&expected).all(|(a, e)| a.0 == e.0 && (a.1 - e.1).abs() < 1e-9);
+  if !same {
+    return Err(format!("明細行不符: 預期 {expected:?}, 實際 {actual:?}"));
+  }
+
+  let alerted = stdout.contains("已寄出警示信");
+  if alerted != case.expect_alert {
+    return Err(format!(
+      "警示信應{}觸發, 實際{}觸發 (若預期觸發卻沒有, 請檢查 Gmail 設定)",
+      if case.expect_alert { "" } else { "不" },
+      if alerted { "有" } else { "沒有" }
+    ));
+  }
+  Ok(())
+}
+
+async fn item_master_exists(full_item: &str) -> Result<bool, String> {
+  let client = db::connect().await?;
+  client
+    .query_one(
+      "SELECT EXISTS (SELECT 1 FROM gapwmc_832_item WHERE sku || left(long_description, 1) = $1)",
+      &[&full_item],
+    )
+    .await
+    .map(|row| row.get(0))
+    .map_err(|e| format!("驗證查詢失敗: {e}"))
+}
+
 async fn run_receiving_uat(app: &AppHandle) -> Result<Vec<UatItem>, String> {
-  // (資料夾名稱, 報告項目名稱); 情境 2/3/5 目前只驗證「檔案匯入成功」, 尚未實作「同一 PO# 前後比對」邏輯 (見 task.md)
-  let folders: [(&str, &str); 4] = [
-    ("850-SKU existence", "情境 6 - 未收到 Item Master 即收到 DPO"),
-    ("850-scenario-2-delete-sku", "情境 2 - 刪除 SKU/Size (僅驗證匯入成功, 比對邏輯待實作)"),
-    ("850-scenario-3-qty-change", "情境 3 - 變更 Item 數量 (僅驗證匯入成功, 比對邏輯待實作)"),
-    ("850-scenario-5-reactivate-po", "情境 5 - 重新啟用 PO (僅驗證匯入成功, 比對邏輯待實作)"),
-  ];
+  let folder = project_root().join("doc").join("850-uat-test");
+  let files = list_files(&folder, "rc"); // 依檔名排序 = SET 01, 02, ... 的執行順序
+  if files.is_empty() {
+    return Ok(vec![UatItem {
+      name: "850 測試 (情境 1-6)".into(),
+      status: "skip".into(),
+      detail: "doc/850-uat-test/ 沒有 .rc 測試檔, 請放入檔案後再測試".into(),
+    }]);
+  }
+  let present: Vec<u32> = files.iter().filter_map(|f| parse_set_no(&file_display_name(f))).collect();
 
-  let mut items = Vec::new();
-  for (dir_name, label) in folders {
-    let folder = project_root().join("doc").join(dir_name);
-    let files = list_files(&folder, "rc");
-    if files.is_empty() {
-      items.push(UatItem {
-        name: label.into(),
-        status: "skip".into(),
-        detail: format!("doc/{dir_name}/ 沒有 .rc 測試檔, 請放入檔案後再測試"),
-      });
-      continue;
-    }
-
-    let mut ok = true;
-    let mut details = Vec::new();
-    for file in &files {
-      let fname = file_display_name(file);
-      match run_import(app, file).await {
-        Ok(stdout) => {
-          let alerted = stdout.contains("已寄出警示信");
-          details.push(format!("{fname}: 匯入成功{}", if alerted { " (觸發情境 6 警示信)" } else { "" }));
-        }
-        Err(e) => {
-          ok = false;
-          details.push(format!("{fname}: 失敗 - {e}"));
-        }
+  // 前置檢查: 不預期觸發警示信的情境, 品號必須先有 832 Item Master, 否則每一步都會誤寄警示信; 缺的話一個檔案都不匯入
+  let mut missing = Vec::new();
+  for case in RECEIVING_CASES.iter().filter(|c| !c.expect_alert && present.contains(&c.set_no)) {
+    for (item, _) in case.lines {
+      if !missing.contains(item) && !item_master_exists(item).await? {
+        missing.push(*item);
       }
     }
-    items.push(UatItem { name: label.into(), status: if ok { "pass" } else { "fail" }.into(), detail: details.join("\n") });
+  }
+  if !missing.is_empty() {
+    return Ok(vec![UatItem {
+      name: "850 前置檢查: 832 Item Master".into(),
+      status: "fail".into(),
+      detail: format!("以下品號在 gapwmc_832_item 找不到, 請先匯入對應的 832 檔案後再測試 (避免每個步驟都誤寄警示信): {}", missing.join(", ")),
+    }]);
+  }
+
+  let mut items = Vec::new();
+  let mut failed = false;
+  let mut verified: Vec<&PathBuf> = Vec::new();
+  let mut unverified: Vec<String> = Vec::new();
+  for file in &files {
+    let fname = file_display_name(file);
+    let case = parse_set_no(&fname).and_then(|n| RECEIVING_CASES.iter().find(|c| c.set_no == n));
+    let name = match case {
+      Some(c) => format!("{} ({fname})", c.label),
+      None => format!("850 匯入: {fname}"),
+    };
+    if failed {
+      items.push(UatItem { name, status: "skip".into(), detail: "前面的步驟失敗, 後續情境依賴前一步的結果, 未執行".into() });
+      continue;
+    }
+    let outcome = match run_import(app, file).await {
+      Ok(stdout) => match case {
+        Some(c) => verify_receiving_case(c, &fname, &stdout).await.map(|_| format!("匯入成功, 比對通過\n{}", stdout.trim())),
+        None => Ok(format!("匯入成功 (無比對規則)\n{}", stdout.trim())),
+      },
+      Err(e) => Err(e),
+    };
+    match outcome {
+      Ok(detail) => {
+        if case.is_some() {
+          verified.push(file);
+        } else {
+          unverified.push(fname.clone());
+        }
+        items.push(UatItem { name, status: "pass".into(), detail });
+      }
+      Err(detail) => {
+        failed = true;
+        items.push(UatItem { name, status: "fail".into(), detail });
+      }
+    }
+  }
+
+  // 情境是連續的, 全部通過才歸檔到 bak/; 有失敗就全部留在原處, 修正後可從頭重跑。
+  // 沒有比對規則的檔案 (檔名不是 SET nn 開頭) 沒被驗證過, 不歸檔, 留在原處並在報告註明
+  if !failed {
+    let notes = unverified.iter().map(|n| format!("{n}: 無比對規則, 未歸檔")).collect();
+    items.push(archive_report("850 測試檔歸檔", &verified, notes));
   }
 
   Ok(items)

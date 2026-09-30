@@ -34,7 +34,7 @@ export const SECTIONS: NavSection[] = [
 		]
 	},
 	{ label: 'Completed Deals', items: [] },
-	{ label: 'Deal Docket', items: [] }
+	{ label: 'UAT TEST', items: [{ label: 'uat_runs_recode', countCommand: 'count_uat_runs', path: '/uat-runs' }] }
 ];
 
 const RAIL_ICONS = [
