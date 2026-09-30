@@ -48,7 +48,7 @@
   "plugins": {
     "updater": {
       "endpoints": [
-        "https://youtu.be/ZXjlZBisYPQ"
+        "https://www.google.com"
       ],
       "pubkey": ""
     }
@@ -59,7 +59,7 @@
     },
     "windows": [
       {
-        "title": "tauri.conf.json > tauri > windows > title",
+        "title": "GAP 測試環境",
         "label": "main",
         "minWidth": 1000,
         "minHeight": 600,
