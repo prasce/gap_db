@@ -35,9 +35,6 @@ async fn connect() -> Result<Client, String> {
   Ok(client)
 }
 
-// 查詢最多回傳的筆數; total 為符合條件的總筆數, 超過上限時前端會提示
-const QUERY_LIMIT: i64 = 1000;
-
 // 查詢頁共用的回傳格式; fields 的 key 為欄位別名, 值一律為文字
 #[derive(Debug, Serialize)]
 pub struct RowData {
@@ -53,6 +50,9 @@ pub struct Page {
   limit: i64,
 }
 
+// 每頁筆數上限, 對齊前端頁面大小選單的最大選項 (100), 避免不合理輸入
+const MAX_PAGE_SIZE: i64 = 100;
+
 // 空白視為不限制; 跳脫 LIKE 的萬用字元, 讓 % 和 _ 當一般字元比對
 fn like_term(v: &Option<String>) -> Option<String> {
   v.as_deref()
@@ -62,21 +62,26 @@ fn like_term(v: &Option<String>) -> Option<String> {
 }
 
 // 共用查詢: columns 為 (SQL 運算式, 別名), from_where 為 FROM ... WHERE ... ORDER BY 部分;
-// 每個查詢條件 $n 以部分符合、不分大小寫比對
+// 每個查詢條件 $n 以部分符合、不分大小寫比對; page 為 1-based 頁碼, page_size 為每頁筆數 (夾在 1..=MAX_PAGE_SIZE 之間)
 async fn query_page(
   id_expr: &str,
   columns: &[(&str, &'static str)],
   from_where: &str,
   filters: &[&Option<String>],
+  page: i64,
+  page_size: i64,
 ) -> Result<Page, String> {
   let client = connect().await?;
+  let page_size = page_size.clamp(1, MAX_PAGE_SIZE);
+  let page = page.max(1);
+  let offset = (page - 1) * page_size;
   let select = columns
     .iter()
     .map(|(expr, alias)| format!("({expr})::text AS {alias}"))
     .collect::<Vec<_>>()
     .join(", ");
   let sql = format!(
-    "SELECT {id_expr} AS id, {select}, count(*) OVER () AS total {from_where} LIMIT {QUERY_LIMIT}"
+    "SELECT {id_expr} AS id, {select}, count(*) OVER () AS total {from_where} LIMIT {page_size} OFFSET {offset}"
   );
   let terms: Vec<Option<String>> = filters.iter().map(|f| like_term(f)).collect();
   let params: Vec<&(dyn ToSql + Sync)> = terms.iter().map(|t| t as &(dyn ToSql + Sync)).collect();
@@ -84,7 +89,7 @@ async fn query_page(
     .query(&sql, &params)
     .await
     .map_err(|e| format!("查詢失敗: {e}"))?;
-  // count(*) OVER () 在 LIMIT 之前計算, 所以是全部符合條件的筆數
+  // count(*) OVER () 在 LIMIT/OFFSET 之前計算, 所以是全部符合條件的筆數, 與目前頁次無關
   let total = rows.first().map_or(0, |row| row.get::<_, i64>("total"));
   let items = rows
     .iter()
@@ -99,7 +104,7 @@ async fn query_page(
   Ok(Page {
     items,
     total,
-    limit: QUERY_LIMIT,
+    limit: page_size,
   })
 }
 
@@ -161,7 +166,7 @@ const ITEM_832_COLUMNS: [&str; 26] = [
 ];
 
 #[tauri::command]
-pub async fn query_832_items(filter: ItemFilter) -> Result<Page, String> {
+pub async fn query_832_items(filter: ItemFilter, page: i64, page_size: i64) -> Result<Page, String> {
   let columns: Vec<(&str, &'static str)> = ITEM_832_COLUMNS.iter().map(|&c| (c, c)).collect();
   let from_where = format!(
     "FROM gapwmc_832_item WHERE {} AND {} AND {} AND {} ORDER BY id",
@@ -180,6 +185,8 @@ pub async fn query_832_items(filter: ItemFilter) -> Result<Page, String> {
       &filter.barcode,
       &filter.long_description,
     ],
+    page,
+    page_size,
   )
   .await
 }
@@ -229,7 +236,7 @@ const RECEIPT_850_COLUMNS: [(&str, &str); 18] = [
 ];
 
 #[tauri::command]
-pub async fn query_850_receipts(filter: ReceiptFilter) -> Result<Page, String> {
+pub async fn query_850_receipts(filter: ReceiptFilter, page: i64, page_size: i64) -> Result<Page, String> {
   let from_where = format!(
     "FROM gapwmc_850_detail d
      JOIN gapwmc_850_header h ON h.id = d.header_id
@@ -251,6 +258,8 @@ pub async fn query_850_receipts(filter: ReceiptFilter) -> Result<Page, String> {
       &filter.item_number,
       &filter.order_status,
     ],
+    page,
+    page_size,
   )
   .await
 }

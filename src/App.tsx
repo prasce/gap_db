@@ -89,6 +89,8 @@ function MainApp() {
 		if (path === location.pathname) navigate(remaining[Math.min(index, remaining.length - 1)] ?? '/home');
 	};
 	const tabs = openTabs.map(path => ({ path, label: views.find(view => view.path === path)?.name ?? path }));
+	// 剛切換到一個還沒被加進 openTabs 的新分頁時 (effect 尚未跑完), 補上目前路徑避免當下這一畫面閃一下空白
+	const renderedPaths = openTabs.includes(location.pathname) ? openTabs : [...openTabs, location.pathname];
 
 	const [scroller, setScroller] = useState<HTMLElement | null>(null);
 	// load preferences using localForage
@@ -197,11 +199,17 @@ function MainApp() {
 				{usingCustomTitleBar && <Space h='xl' />}
 				<SimpleBar scrollableNodeProps={{ ref: setScroller }} autoHide={false} className={classes.simpleBar}>
 					<ErrorBoundary FallbackComponent={FallbackAppRender} /*onReset={_details => resetState()} */ onError={e => tauriLogger.error(e.message)}>
-						<Routes>
-							{/* empty page shown when every tab has been closed */}
-							<Route path='/home' element={null} />
-							{views.map((view, index) => <Route key={index} path={view.path} element={<Suspense fallback={<FallbackSuspense />}><view.component /></Suspense>} />)}
-						</Routes>
+						{/* 分頁切換時保留每個分頁的畫面狀態 (查詢條件/結果/分頁), 所以已開啟的分頁一律維持掛載,
+						    只用 hidden 隱藏非目前分頁, 而不是像 <Routes> 那樣切換路徑就整個卸載重建 */}
+						{renderedPaths.map(path => {
+							const view = views.find(v => v.path === path);
+							if (!view) return null;
+							return (
+								<div key={path} hidden={path !== location.pathname}>
+									<Suspense fallback={<FallbackSuspense />}><view.component /></Suspense>
+								</div>
+							);
+						})}
 					</ErrorBoundary>
 					{/* prevent the footer from covering bottom text of a route view */}
 					<Space h={showFooter ? 70 : 50} />
