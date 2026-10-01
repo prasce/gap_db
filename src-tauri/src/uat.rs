@@ -238,7 +238,7 @@ async fn run_item_master_uat(app: &AppHandle, account: Option<&str>) -> Result<(
 }
 
 // 850 UAT 情境 (doc/850-uat-test/ 的 SET 01~07): SET 01~06 是同一張 PO (TEST0001) 依序變化, 必須依檔名順序匯入,
-// 850 同一張 PO 只保留一份, 每個檔案都是原地更新它; 每一步匯入後都比對這張 PO 的 header 狀態與明細行; SET 07 是另一張 PO, 品號不在 832 (情境 6), 必須觸發警示信
+// 850 同一張 PO 只保留一份, 每個檔案都是原地更新它; 每一步匯入後都比對這張 PO 的 header 狀態與明細行; SET 07 是另一張 PO, 品號不在 832 (情境 7), 必須被擋下 (不寫入資料庫) 並寄警示信
 struct ReceivingCase {
   set_no: u32,
   label: &'static str,
@@ -246,11 +246,11 @@ struct ReceivingCase {
   po: &'static str,
   status: &'static str,
   lines: &'static [(&'static str, f64)], // (完整品號 = f05_item_number + f26_item_last_digit, 訂購數量)
-  expect_alert: bool,
+  expect_blocked: bool, // true: 品號不在 832 Item Master, 整個檔案必須被擋下 (不寫入 header/detail/carton) 並寄警示信
 }
 
 const RECEIVING_CASES: [ReceivingCase; 7] = [
-  ReceivingCase { set_no: 1, kind: "ACTIVE", label: "基準 - PO 生效 (1 行)", po: "TEST0001", status: "ACTIVE", lines: &[("324084338", 114.0)], expect_alert: false },
+  ReceivingCase { set_no: 1, kind: "ACTIVE", label: "基準 - PO 生效 (1 行)", po: "TEST0001", status: "ACTIVE", lines: &[("324084338", 114.0)], expect_blocked: false },
   ReceivingCase {
     set_no: 2,
     kind: "UPDATE_ADD_LINE",
@@ -258,7 +258,7 @@ const RECEIVING_CASES: [ReceivingCase; 7] = [
     po: "TEST0001",
     status: "ACTIVE",
     lines: &[("324084338", 114.0), ("323891352", 114.0)],
-    expect_alert: false,
+    expect_blocked: false,
   },
   ReceivingCase {
     set_no: 3,
@@ -267,11 +267,11 @@ const RECEIVING_CASES: [ReceivingCase; 7] = [
     po: "TEST0001",
     status: "ACTIVE",
     lines: &[("324084338", 200.0), ("323891352", 300.0)],
-    expect_alert: false,
+    expect_blocked: false,
   },
-  ReceivingCase { set_no: 4, kind: "UPDATE_DELETE_LINE", label: "情境 2 - 刪除 SKU/Size", po: "TEST0001", status: "ACTIVE", lines: &[("324084338", 200.0)], expect_alert: false },
-  ReceivingCase { set_no: 5, kind: "CANCEL", label: "情境 4 - 取消 PO", po: "TEST0001", status: "CANCEL", lines: &[("324084338", 200.0)], expect_alert: false },
-  ReceivingCase { set_no: 6, kind: "REP_ACTIVE", label: "情境 5 - 重新啟用 PO", po: "TEST0001", status: "ACTIVE", lines: &[("324084338", 200.0)], expect_alert: false },
+  ReceivingCase { set_no: 4, kind: "UPDATE_DELETE_LINE", label: "情境 2 - 刪除 SKU/Size", po: "TEST0001", status: "ACTIVE", lines: &[("324084338", 200.0)], expect_blocked: false },
+  ReceivingCase { set_no: 5, kind: "CANCEL", label: "情境 4 - 取消 PO", po: "TEST0001", status: "CANCEL", lines: &[("324084338", 200.0)], expect_blocked: false },
+  ReceivingCase { set_no: 6, kind: "REP_ACTIVE", label: "情境 5 - 重新啟用 PO", po: "TEST0001", status: "ACTIVE", lines: &[("324084338", 200.0)], expect_blocked: false },
   ReceivingCase {
     set_no: 7,
     kind: "ITEM_NOT_FOUND",
@@ -279,7 +279,7 @@ const RECEIVING_CASES: [ReceivingCase; 7] = [
     po: "TEST0002",
     status: "ACTIVE",
     lines: &[("TEST84338", 114.0), ("TEST91352", 114.0)],
-    expect_alert: true,
+    expect_blocked: true,
   },
 ];
 
@@ -350,7 +350,7 @@ async fn precheck_receiving_case(case: &ReceivingCase) -> Result<Option<(String,
 }
 
 // 匯入後比對: 該 PO 只有一筆 header 且是被本檔更新的 (source_file 就是本檔), 狀態、明細行 (依檔案順序) 與預期一致; 警示信有無也要符合預期
-async fn verify_receiving_case(case: &ReceivingCase, file_name: &str, stdout: &str) -> Result<(), String> {
+async fn verify_receiving_case(case: &ReceivingCase, file_name: &str) -> Result<(), String> {
   let client = db::connect().await?;
   let state = po_state(&client, case.po).await?.ok_or_else(|| format!("資料庫找不到 PO {}", case.po))?;
   if state.source_file != file_name {
@@ -363,14 +363,21 @@ async fn verify_receiving_case(case: &ReceivingCase, file_name: &str, stdout: &s
   if !same_lines(&state.lines, &expected) {
     return Err(format!("明細行不符: 預期 {expected:?}, 實際 {:?}", state.lines));
   }
+  Ok(())
+}
 
-  let alerted = stdout.contains("已寄出警示信");
-  if alerted != case.expect_alert {
-    return Err(format!(
-      "警示信應{}觸發, 實際{}觸發 (若預期觸發卻沒有, 請檢查 Gmail 設定)",
-      if case.expect_alert { "" } else { "不" },
-      if alerted { "有" } else { "沒有" }
-    ));
+// 被擋下的情境 (品號不在 832 Item Master): 匯入程式必須以失敗結束並印出「已擋下」與「已寄出警示信」,
+// 且資料庫完全沒有這張 PO (header 不存在, detail / carton 隨 header 一起不存在, 沒有任何寫入)
+async fn verify_blocked_case(case: &ReceivingCase, output: &str) -> Result<(), String> {
+  if !output.contains("已擋下") {
+    return Err(format!("應被擋下但輸出沒有「已擋下」:\n{}", output.trim()));
+  }
+  if !output.contains("已寄出警示信") {
+    return Err("已擋下, 但沒有寄出警示信 (請檢查 Gmail 設定)".to_string());
+  }
+  let client = db::connect().await?;
+  if po_state(&client, case.po).await?.is_some() {
+    return Err(format!("PO {} 應被擋下, 但資料庫已經有它的資料", case.po));
   }
   Ok(())
 }
@@ -424,7 +431,7 @@ async fn run_receiving_uat(app: &AppHandle) -> Result<(Vec<UatItem>, Vec<UatTask
 
   // 前置檢查: 不預期觸發警示信的情境, 品號必須先有 832 Item Master, 否則每一步都會誤寄警示信; 缺的話一個檔案都不匯入
   let mut missing = Vec::new();
-  for case in RECEIVING_CASES.iter().filter(|c| !c.expect_alert && present.contains(&c.set_no)) {
+  for case in RECEIVING_CASES.iter().filter(|c| !c.expect_blocked && present.contains(&c.set_no)) {
     for (item, _) in case.lines {
       if !missing.contains(item) && !item_master_exists(item).await? {
         missing.push(*item);
@@ -457,9 +464,12 @@ async fn run_receiving_uat(app: &AppHandle) -> Result<(Vec<UatItem>, Vec<UatTask
     // outcome: (報告說明, 匯入前這張 PO 的 (狀態, 明細)); 後者用來產生 uat_task。順序: 匯入前檢查前一個情境 -> 匯入 -> 匯入後比對
     let outcome = match case {
       Some(c) => match precheck_receiving_case(c).await {
-        Ok(prev) => match run_import(app, file).await {
-          Ok(stdout) => verify_receiving_case(c, &fname, &stdout).await.map(|_| (format!("匯入成功, 比對通過\n{}", stdout.trim()), prev)),
-          Err(e) => Err(e),
+        Ok(prev) => match (c.expect_blocked, run_import(app, file).await) {
+          // 預期被擋下: 匯入程式失敗結束 (Err) 才是對的, 還要確認沒有寫入任何資料
+          (true, Err(output)) => verify_blocked_case(c, &output).await.map(|_| (format!("已擋下, 未寫入資料庫, 已寄警示信\n{}", output.trim()), prev)),
+          (true, Ok(stdout)) => Err(format!("應被擋下卻匯入成功了:\n{}", stdout.trim())),
+          (false, Ok(stdout)) => verify_receiving_case(c, &fname).await.map(|_| (format!("匯入成功, 比對通過\n{}", stdout.trim()), prev)),
+          (false, Err(e)) => Err(e),
         },
         Err(e) => Err(e),
       },

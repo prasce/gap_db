@@ -311,3 +311,4 @@ CREATE TABLE IF NOT EXISTS uat_runs (
 - `uat_runs_recode` 以 LATERAL unnest 展開, 同一個 run_id 的多筆測試目的各佔一列; 「共 N 筆」以展開後的列計, 側欄計數仍為執行次數。
 - **2026-10-01 後續: 850 同一張 PO 只保留一份、原地更新** (取代先前 append-only): `import.mjs` 對 `.rc` 以 PO 號 upsert, 明細依完整品號同步 (更新數量 / 新增 / 刪除), 不留歷史; `gapwmc_850_header` 新增 `updated_at` 與唯一索引 `ux_gapwmc_850_header_po`; CANCEL / REP_ACTIVE 也是原地改狀態。850 UAT 改為匯入前檢查 PO 停在前一個情境的狀態, 重測前須先 `DELETE FROM gapwmc_850_header WHERE f06_po_number IN ('TEST0001','TEST0002');`。
 - 比對邏輯在 `src-tauri/src/uat_diff.rs` (純函式 + 單元測試), 查舊資料在 `uat.rs` 的 `im_file_tasks`。
+- **2026-10-01 後續: 850 品號不在 832 Item Master 時整個檔案擋下**: `import.mjs` 在寫入前檢查明細品號, 任何一個在 `gapwmc_832_item` 找不到就不寫入 header / detail / carton (新 PO 或既有 PO 的更新都一樣), 印出「已擋下」、exit 1、寄警示信。850 UAT 第 7 情境 (`ITEM_NOT_FOUND`) 改為驗證「被擋下 + 已寄警示信 + 資料庫沒有該 PO」才算通過。

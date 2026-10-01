@@ -105,7 +105,7 @@ pub fn receiving_tasks(kind: &str, po: &str, status: &str, cur: &[Line], prev: O
     "REP_ACTIVE" => vec![format!("{po}: {prev_status} → {status} (同一張 PO 原地更新)")],
     "ITEM_NOT_FOUND" => {
       let items: Vec<&str> = cur.iter().map(|(i, _)| i.as_str()).collect();
-      vec![format!("{po}: {} (已寄警示信)", items.join(", "))]
+      vec![format!("{po}: {} (已擋下, 未寫入; 已寄警示信)", items.join(", "))]
     }
     _ => Vec::new(),
   };
@@ -210,7 +210,7 @@ mod tests {
     );
     assert_eq!(
       receiving_tasks("ITEM_NOT_FOUND", "TEST0002", "ACTIVE", &[line("TEST84338", 114.0), line("TEST91352", 114.0)], None)[0].task,
-      "TEST0002: TEST84338, TEST91352 (已寄警示信)"
+      "TEST0002: TEST84338, TEST91352 (已擋下, 未寫入; 已寄警示信)"
     );
   }
 

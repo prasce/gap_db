@@ -224,8 +224,23 @@ async function importRc(client, lines, sourceFile) {
   const counts = Object.fromEntries(Object.values(RC_TABLES).map((t) => [t, 0]));
   for (const fields of records) counts[RC_TABLES[fields[0]]]++;
 
+  const groups = groupRcRecords(records);
+
+  // 擋下規則: 明細品號只要有任何一個在 gapwmc_832_item 找不到 (未收到 Item Master 即收到 DPO), 整個檔案都不寫入
+  // header / detail / carton (包含不寫入已存在 PO 的更新), 回報給呼叫端寄警示信
+  const itemIdx = fieldCols.RCPDETL.indexOf('f05_item_number');
+  const digitIdx = fieldCols.RCPDETL.indexOf('f26_item_last_digit');
+  const detailItems = groups
+    .flatMap((g) => g.details)
+    .map((fields) => ({ itemNumber: toNull(fields[itemIdx]), lastDigit: toNull(fields[digitIdx]) }))
+    .filter((item) => item.itemNumber);
+  const missing = await findMissingItemMasters(client, detailItems);
+  if (missing.length > 0) {
+    return { type: 'rc', blocked: { poNumber: toNull(groups[0]?.header[poNumberIdx] ?? ''), missing } };
+  }
+
   const changes = [];
-  for (const group of groupRcRecords(records)) {
+  for (const group of groups) {
     changes.push(await applyPo(client, group, sourceFile, fieldCols, poNumberIdx));
   }
   return {
@@ -274,17 +289,14 @@ async function findMissingItemMasters(client, detailItems) {
   return missing;
 }
 
-async function alertMissingItemMasters(client, sourceFile, result) {
-  if (result.type !== 'rc' || result.detailItems.length === 0) return;
-  const missing = await findMissingItemMasters(client, result.detailItems);
-  if (missing.length === 0) return;
+async function alertBlockedPo(sourceFile, { poNumber, missing }) {
   const body = [
     `匯入檔案: ${sourceFile}`,
-    `PO 號: ${result.poNumber ?? '(未知)'}`,
-    '以下品號尚未收到對應的 832 Item Master, 系統仍先收下這筆 DPO:',
+    `PO 號: ${poNumber ?? '(未知)'}`,
+    '以下品號尚未收到對應的 832 Item Master, 系統已擋下這筆 DPO (未寫入 header / detail / carton):',
     ...missing.map((item) => `- ${item}`),
   ].join('\n');
-  await sendAlertEmail({ subject: `[GAP測試環境] 850 收到未知品號警示 - PO ${result.poNumber ?? ''} (${sourceFile})`, body });
+  await sendAlertEmail({ subject: `[GAP測試環境] 850 擋下未知品號 - PO ${poNumber ?? ''} (${sourceFile})`, body });
   console.log(`  -> 已寄出警示信: ${missing.length} 個品號未在 Item Master 中找到`);
 }
 
@@ -307,21 +319,27 @@ async function main() {
       await client.query('BEGIN');
       try {
         const result = await importFile(client, file, { replace });
+        if (result.blocked) {
+          // 被擋下的檔案什麼都沒寫入 (importRc 在寫入前就回傳), 以失敗計 (exit code 1), 但仍寄警示信通知
+          await client.query('ROLLBACK');
+          const { poNumber, missing } = result.blocked;
+          console.error(`${file}: 已擋下, 未寫入任何資料 - PO ${poNumber ?? '(未知)'} 有 ${missing.length} 個品號在 gapwmc_832_item 找不到: ${missing.join(', ')}`);
+          failed++;
+          if (!dryRun) {
+            try {
+              await alertBlockedPo(basename(file), result.blocked);
+            } catch (alertErr) {
+              console.error(`  -> 警示信寄送失敗: ${alertErr.message}`);
+            }
+          }
+          continue;
+        }
         await client.query(dryRun ? 'ROLLBACK' : 'COMMIT');
         const summary = result.skipped ?? Object.entries(result.counts).map(([t, n]) => `${t} ${n} 筆`).join(', ');
         console.log(`${dryRun ? '[dry-run] ' : ''}${file}: ${summary}`);
         for (const c of result.changes ?? []) {
           const { inserted, updated, deleted } = c.lines;
           console.log(`  -> PO ${c.poNumber}: ${c.action} (明細 新增 ${inserted} / 更新 ${updated} / 刪除 ${deleted})`);
-        }
-
-        if (!dryRun && !result.skipped) {
-          // 警示信寄送失敗不影響匯入結果 (資料已經 COMMIT), 只在畫面上提示
-          try {
-            await alertMissingItemMasters(client, basename(file), result);
-          } catch (alertErr) {
-            console.error(`  -> 警示信寄送失敗: ${alertErr.message}`);
-          }
         }
       } catch (err) {
         await client.query('ROLLBACK');
