@@ -29,7 +29,7 @@ pnpm run import-wms [--dry-run] [--replace] <files...>   # import WMS .im/.rc fi
 ```
 
 - Use `pnpm run import-wms`, not `pnpm import-wms`: `pnpm import` is a built-in pnpm command.
-- E2E tests need `tauri-driver` (`cargo install tauri-driver`) and WebDriver setup. See `SAMPLE_README.md` in git history (`git show HEAD:SAMPLE_README.md`).
+- E2E tests need `tauri-driver` (`cargo install tauri-driver`) and WebDriver setup. The template's `SAMPLE_README.md` was removed from the repo; older commits still have it (`git log --all -- SAMPLE_README.md`, then `git show <commit>:SAMPLE_README.md`).
 
 ## Database (gap_db)
 
@@ -75,5 +75,6 @@ pnpm run import-wms [--dry-run] [--replace] <files...>   # import WMS .im/.rc fi
 
 ## Repo rules
 
-- Never commit `SAMPLE_README.md` (it has local edits the user wants kept out), `doc/`, `開發用圖片/`, or `.env`. Stage files by name rather than `git add -A`.
+- Never commit `doc/`, `開發用圖片/`, or `.env`. Stage files by name rather than `git add -A`.
+- `SAMPLE_README.md` is untracked and gitignored; it was deleted on purpose, so do not restore it.
 - Git has no global identity configured. Commits so far were made with `git -c user.name=prasce -c user.email=40049901+prasce@users.noreply.github.com commit ...`.

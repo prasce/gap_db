@@ -1,9 +1,11 @@
 // 「UAT 測試」按鈕: 貨品主檔/收貨明細頁面用, 讓 user 把測試檔放進指定資料夾後按鈕觸發, 依 task.md 規劃
 //   - 重用 scripts/import.mjs (透過 tauri-plugin-shell 直接執行 `node scripts/import.mjs --replace <file>`), 不在 Rust 重寫一份匯入邏輯
 //   - 832: 掃描 doc/832-uat-test/ 的 .im 檔, 匯入後順便驗證「一般使用者隱藏已刪除 SKU / 管理員可查完整歷史」邏輯
-//   - 850: 掃描 doc/850-uat-test/ 的 .rc 檔 (SET 01~07), 依檔名順序匯入, 每步比對同一張 PO 的狀態/明細行, 全部通過才整批移到 bak/
+//   - 850: 掃描 doc/850-uat-test/ 的 .rc 檔 (SET 01~07), 依檔名順序匯入, 每步比對同一張 PO 的狀態/明細行, 每個情境通過就立刻把該檔移到 bak/
 use crate::db;
+use crate::uat_diff::{self, ColumnChange, Line, UatTask};
 use serde::Serialize;
+use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tauri::AppHandle;
@@ -96,39 +98,89 @@ fn move_to_bak(file: &Path) -> Result<PathBuf, String> {
   Ok(dest)
 }
 
-// 把 files 移到 bak/ 並產生一筆報告項目; 移動失敗不影響通過判定 (資料已入庫), 只在報告註明
-fn archive_report(name: &str, files: &[&PathBuf], extra_notes: Vec<String>) -> UatItem {
-  let mut notes: Vec<String> = files
-    .iter()
-    .map(|file| match move_to_bak(file) {
-      Ok(dest) => format!("{} -> {}", file_display_name(file), dest.display()),
-      Err(e) => format!("{}: 未能移至 bak: {e}", file_display_name(file)),
-    })
-    .collect();
-  notes.extend(extra_notes);
-  UatItem { name: name.into(), status: "pass".into(), detail: notes.join("\n") }
+// 單一情境成功後立刻歸檔; 回傳要附加在該情境報告的一行說明。
+// 移動失敗不影響通過判定 (資料已入庫), 只在報告註明
+fn archive_note(file: &Path) -> String {
+  match move_to_bak(file) {
+    Ok(dest) => format!("已歸檔: {} -> {}", file_display_name(file), dest.display()),
+    Err(e) => format!("{}: 未能移至 bak: {e}", file_display_name(file)),
+  }
 }
 
-async fn run_item_master_uat(app: &AppHandle, account: Option<&str>) -> Result<Vec<UatItem>, String> {
+// 832 一個檔案匯入後的測試目的: 取本檔新列的事件類型 (importer 依檔名寫入 status), UPDATE 時逐列去找同 SKU 的上一筆舊資料比對。
+// 舊資料以 customer_code + sku + long_description 第 1 碼配對 (不含 item_size/item_colour, 所以 item_colour 被改也看得出來),
+// 只取本檔之前匯入的列 (id 較小), 同 SKU 有多筆時優先選 item_size 相同的
+async fn im_file_tasks(source_file: &str) -> Result<Vec<UatTask>, String> {
+  let client = db::connect().await?;
+  let new_rows = client
+    .query("SELECT to_jsonb(t) FROM gapwmc_832_item t WHERE source_file = $1 ORDER BY line_no", &[&source_file])
+    .await
+    .map_err(|e| format!("查詢本檔資料失敗: {e}"))?;
+  let new_rows: Vec<Map<String, Value>> = new_rows
+    .iter()
+    .filter_map(|r| r.get::<_, Value>(0).as_object().cloned())
+    .collect();
+  let Some(first) = new_rows.first() else { return Ok(Vec::new()) };
+  let event = first.get("status").and_then(Value::as_str).unwrap_or("UPDATE").to_string();
+  if event != "UPDATE" {
+    return Ok(uat_diff::im_tasks(&event, None));
+  }
+
+  let text = |row: &Map<String, Value>, key: &str| row.get(key).and_then(Value::as_str).map(str::to_string);
+  let mut changes: Vec<ColumnChange> = Vec::new();
+  let mut any_old = false;
+  for row in &new_rows {
+    let old = client
+      .query_opt(
+        "SELECT to_jsonb(p) FROM gapwmc_832_item p \
+         WHERE p.customer_code = $1 AND p.sku = $2 \
+           AND left(p.long_description, 1) IS NOT DISTINCT FROM left($3::text, 1) \
+           AND p.id < (SELECT min(id) FROM gapwmc_832_item WHERE source_file = $4) \
+         ORDER BY (p.item_size IS NOT DISTINCT FROM $5::text) DESC, p.id DESC LIMIT 1",
+        &[&text(row, "customer_code"), &text(row, "sku"), &text(row, "long_description"), &source_file, &text(row, "item_size")],
+      )
+      .await
+      .map_err(|e| format!("查詢舊資料失敗: {e}"))?;
+    if let Some(old) = old.and_then(|r| r.get::<_, Value>(0).as_object().cloned()) {
+      any_old = true;
+      changes.extend(uat_diff::diff_columns(&old, row));
+    }
+  }
+  Ok(uat_diff::im_tasks(&event, any_old.then_some(changes.as_slice())))
+}
+
+async fn run_item_master_uat(app: &AppHandle, account: Option<&str>) -> Result<(Vec<UatItem>, Vec<UatTask>), String> {
   let folder = project_root().join("doc").join("832-uat-test");
   let files = list_files(&folder, "im");
   if files.is_empty() {
-    return Ok(vec![UatItem {
+    let skip = UatItem {
       name: "832 測試 (001/002/003)".into(),
       status: "skip".into(),
       detail: "doc/832-uat-test/ 沒有 .im 測試檔, 請放入檔案後再測試".into(),
-    }]);
+    };
+    return Ok((vec![skip], Vec::new()));
   }
 
   let mut items = Vec::new();
+  let mut tasks: Vec<UatTask> = Vec::new();
   for file in &files {
     let name = file_display_name(file);
     match run_import(app, file).await {
-      Ok(stdout) => items.push(UatItem {
-        name: format!("832 匯入: {name}"),
-        status: "pass".into(),
-        detail: stdout.trim().to_string(),
-      }),
+      // 匯入成功即記錄測試目的並歸檔, 不等其他檔案; 匯入失敗的檔案留在原處。測試目的要在歸檔前取 (只看資料庫, 不依賴檔案位置)
+      Ok(stdout) => {
+        let task_note = match im_file_tasks(&name).await {
+          Ok(file_tasks) => {
+            tasks.extend(file_tasks);
+            String::new()
+          }
+          Err(e) => format!("\n未能記錄測試目的: {e}"),
+        };
+        items.push(UatItem {
+          name: format!("832 匯入: {name}"),
+          status: "pass".into(),
+          detail: format!("{}\n{}{task_note}", stdout.trim(), archive_note(file)),
+        });
+      }
       Err(e) => items.push(UatItem { name: format!("832 匯入: {name}"), status: "fail".into(), detail: e }),
     }
   }
@@ -182,13 +234,7 @@ async fn run_item_master_uat(app: &AppHandle, account: Option<&str>) -> Result<V
     },
   });
 
-  // 全部匯入成功且 832-002 也通過才整批歸檔到 bak/; 任何一項失敗就留在原處, 修正後可以重跑
-  if items.iter().all(|i| i.status != "fail") {
-    let all: Vec<&PathBuf> = files.iter().collect();
-    items.push(archive_report("832 測試檔歸檔", &all, Vec::new()));
-  }
-
-  Ok(items)
+  Ok((items, tasks))
 }
 
 // 850 UAT 情境 (doc/850-uat-test/ 的 SET 01~07): SET 01~06 是同一張 PO (TEST0001) 依序變化, 必須依檔名順序匯入,
@@ -196,6 +242,7 @@ async fn run_item_master_uat(app: &AppHandle, account: Option<&str>) -> Result<V
 struct ReceivingCase {
   set_no: u32,
   label: &'static str,
+  kind: &'static str, // 寫入 uat_runs.type 的測試目的代碼
   po: &'static str,
   status: &'static str,
   lines: &'static [(&'static str, f64)], // (完整品號 = f05_item_number + f26_item_last_digit, 訂購數量)
@@ -203,9 +250,10 @@ struct ReceivingCase {
 }
 
 const RECEIVING_CASES: [ReceivingCase; 7] = [
-  ReceivingCase { set_no: 1, label: "基準 - PO 生效 (1 行)", po: "TEST0001", status: "ACTIVE", lines: &[("324084338", 114.0)], expect_alert: false },
+  ReceivingCase { set_no: 1, kind: "ACTIVE", label: "基準 - PO 生效 (1 行)", po: "TEST0001", status: "ACTIVE", lines: &[("324084338", 114.0)], expect_alert: false },
   ReceivingCase {
     set_no: 2,
+    kind: "UPDATE_ADD_LINE",
     label: "情境 1 - 新增 SKU/Size",
     po: "TEST0001",
     status: "ACTIVE",
@@ -214,17 +262,19 @@ const RECEIVING_CASES: [ReceivingCase; 7] = [
   },
   ReceivingCase {
     set_no: 3,
+    kind: "UPDATE_QTY",
     label: "情境 3 - 變更 Item 數量",
     po: "TEST0001",
     status: "ACTIVE",
     lines: &[("324084338", 200.0), ("323891352", 300.0)],
     expect_alert: false,
   },
-  ReceivingCase { set_no: 4, label: "情境 2 - 刪除 SKU/Size", po: "TEST0001", status: "ACTIVE", lines: &[("324084338", 200.0)], expect_alert: false },
-  ReceivingCase { set_no: 5, label: "情境 4 - 取消 PO", po: "TEST0001", status: "CANCEL", lines: &[("324084338", 200.0)], expect_alert: false },
-  ReceivingCase { set_no: 6, label: "情境 5 - 重新啟用 PO", po: "TEST0001", status: "ACTIVE", lines: &[("324084338", 200.0)], expect_alert: false },
+  ReceivingCase { set_no: 4, kind: "UPDATE_DELETE_LINE", label: "情境 2 - 刪除 SKU/Size", po: "TEST0001", status: "ACTIVE", lines: &[("324084338", 200.0)], expect_alert: false },
+  ReceivingCase { set_no: 5, kind: "CANCEL", label: "情境 4 - 取消 PO", po: "TEST0001", status: "CANCEL", lines: &[("324084338", 200.0)], expect_alert: false },
+  ReceivingCase { set_no: 6, kind: "REP_ACTIVE", label: "情境 5 - 重新啟用 PO", po: "TEST0001", status: "ACTIVE", lines: &[("324084338", 200.0)], expect_alert: false },
   ReceivingCase {
     set_no: 7,
+    kind: "ITEM_NOT_FOUND",
     label: "情境 6 - 未收到 Item Master 即收到 DPO",
     po: "TEST0002",
     status: "ACTIVE",
@@ -240,7 +290,11 @@ fn parse_set_no(file_name: &str) -> Option<u32> {
 }
 
 // 匯入後比對: 該 PO 最新一次匯入的 header 必須就是這個檔案, 且狀態、明細行 (依檔案順序) 與預期一致; 警示信有無也要符合預期
-async fn verify_receiving_case(case: &ReceivingCase, file_name: &str, stdout: &str) -> Result<(), String> {
+async fn verify_receiving_case(
+  case: &ReceivingCase,
+  file_name: &str,
+  stdout: &str,
+) -> Result<Option<(String, Vec<Line>)>, String> {
   let client = db::connect().await?;
   let header = client
     .query_opt(
@@ -262,22 +316,27 @@ async fn verify_receiving_case(case: &ReceivingCase, file_name: &str, stdout: &s
     return Err(format!("PO {} 狀態應為 {}, 實際為 {}", case.po, case.status, status.trim()));
   }
 
-  let rows = client
-    .query(
-      "SELECT f05_item_number || coalesce(f26_item_last_digit, '') AS item, f06_order_quantity::text AS qty \
-       FROM gapwmc_850_detail WHERE header_id = $1 ORDER BY id",
-      &[&header_id],
-    )
-    .await
-    .map_err(|e| format!("驗證查詢失敗: {e}"))?;
-  let actual: Vec<(String, f64)> = rows
-    .iter()
-    .map(|r| {
-      let item: String = r.get("item");
-      let qty: String = r.get("qty");
-      (item, qty.parse::<f64>().unwrap_or(f64::NAN))
-    })
-    .collect();
+  // GAP 要求一個情境通過才能測下一個: 同一張 PO 前面每個情境 (SET 編號較小者) 都必須已匯入且狀態沒變
+  // (含 CANCEL 那筆舊資料要原封不動留著; 之後同號 PO 再 ACTIVE 是新增 header, 不覆蓋舊的)。
+  // 前面的檔案通過後已移到 bak/, 所以用資料庫判斷而不是看檔案在不在; 檔名開頭 "SET nn " 就是 source_file 的前綴
+  for earlier in RECEIVING_CASES.iter().filter(|c| c.po == case.po && c.set_no < case.set_no) {
+    let prefix = format!("SET {:02} ", earlier.set_no);
+    let old = client
+      .query_opt(
+        "SELECT f13_order_status FROM gapwmc_850_header \
+         WHERE f06_po_number = $1 AND source_file LIKE $2 || '%' ORDER BY id DESC LIMIT 1",
+        &[&case.po, &prefix],
+      )
+      .await
+      .map_err(|e| format!("驗證查詢失敗: {e}"))?
+      .ok_or_else(|| format!("前一個情境 SET {:02} ({}) 尚未通過 (資料庫沒有它的匯入紀錄), 請依序先測完", earlier.set_no, earlier.label))?;
+    let kept: String = old.get::<_, Option<String>>("f13_order_status").unwrap_or_default();
+    if kept.trim() != earlier.status {
+      return Err(format!("前一個情境 SET {:02} 的資料應保留為 {}, 實際為 {}", earlier.set_no, earlier.status, kept.trim()));
+    }
+  }
+
+  let actual = header_lines(&client, header_id).await?;
   let expected: Vec<(String, f64)> = case.lines.iter().map(|(i, q)| (i.to_string(), *q)).collect();
   let same = actual.len() == expected.len()
     && actual.iter().zip(&expected).all(|(a, e)| a.0 == e.0 && (a.1 - e.1).abs() < 1e-9);
@@ -293,7 +352,45 @@ async fn verify_receiving_case(case: &ReceivingCase, file_name: &str, stdout: &s
       if alerted { "有" } else { "沒有" }
     ));
   }
-  Ok(())
+
+  // 回傳同一張 PO 本檔之前最新一筆 header 的 (狀態, 明細), 供產生 uat_task 比對用; 第一次出現的 PO 回傳 None。
+  // 從資料庫取而不是記在這次執行的記憶體, 這樣前面的情境是前幾天測完的也能正確比對
+  let prev = client
+    .query_opt(
+      "SELECT id, f13_order_status FROM gapwmc_850_header WHERE f06_po_number = $1 AND id < $2 ORDER BY id DESC LIMIT 1",
+      &[&case.po, &header_id],
+    )
+    .await
+    .map_err(|e| format!("驗證查詢失敗: {e}"))?;
+  match prev {
+    Some(row) => {
+      let prev_status: Option<String> = row.get("f13_order_status");
+      Ok(Some((prev_status.unwrap_or_default().trim().to_string(), header_lines(&client, row.get("id")).await?)))
+    }
+    None => Ok(None),
+  }
+}
+
+// 某筆 850 header 的明細行 (完整品號 = f05_item_number + f26_item_last_digit, 訂購數量), 依檔案順序
+async fn header_lines(client: &tokio_postgres::Client, header_id: i64) -> Result<Vec<Line>, String> {
+  let rows = client
+    .query(
+      "SELECT f05_item_number || coalesce(f26_item_last_digit, '') AS item, f06_order_quantity::text AS qty \
+       FROM gapwmc_850_detail WHERE header_id = $1 ORDER BY id",
+      &[&header_id],
+    )
+    .await
+    .map_err(|e| format!("驗證查詢失敗: {e}"))?;
+  Ok(
+    rows
+      .iter()
+      .map(|r| {
+        let item: String = r.get("item");
+        let qty: String = r.get("qty");
+        (item, qty.parse::<f64>().unwrap_or(f64::NAN))
+      })
+      .collect(),
+  )
 }
 
 async fn item_master_exists(full_item: &str) -> Result<bool, String> {
@@ -308,15 +405,16 @@ async fn item_master_exists(full_item: &str) -> Result<bool, String> {
     .map_err(|e| format!("驗證查詢失敗: {e}"))
 }
 
-async fn run_receiving_uat(app: &AppHandle) -> Result<Vec<UatItem>, String> {
+async fn run_receiving_uat(app: &AppHandle) -> Result<(Vec<UatItem>, Vec<UatTask>), String> {
   let folder = project_root().join("doc").join("850-uat-test");
   let files = list_files(&folder, "rc"); // 依檔名排序 = SET 01, 02, ... 的執行順序
   if files.is_empty() {
-    return Ok(vec![UatItem {
-      name: "850 測試 (情境 1-6)".into(),
+    let skip = UatItem {
+      name: "850 測試 (情境 1-7)".into(),
       status: "skip".into(),
       detail: "doc/850-uat-test/ 沒有 .rc 測試檔, 請放入檔案後再測試".into(),
-    }]);
+    };
+    return Ok((vec![skip], Vec::new()));
   }
   let present: Vec<u32> = files.iter().filter_map(|f| parse_set_no(&file_display_name(f))).collect();
 
@@ -330,17 +428,17 @@ async fn run_receiving_uat(app: &AppHandle) -> Result<Vec<UatItem>, String> {
     }
   }
   if !missing.is_empty() {
-    return Ok(vec![UatItem {
+    let check = UatItem {
       name: "850 前置檢查: 832 Item Master".into(),
       status: "fail".into(),
       detail: format!("以下品號在 gapwmc_832_item 找不到, 請先匯入對應的 832 檔案後再測試 (避免每個步驟都誤寄警示信): {}", missing.join(", ")),
-    }]);
+    };
+    return Ok((vec![check], Vec::new()));
   }
 
   let mut items = Vec::new();
   let mut failed = false;
-  let mut verified: Vec<&PathBuf> = Vec::new();
-  let mut unverified: Vec<String> = Vec::new();
+  let mut tasks: Vec<UatTask> = Vec::new();
   for file in &files {
     let fname = file_display_name(file);
     let case = parse_set_no(&fname).and_then(|n| RECEIVING_CASES.iter().find(|c| c.set_no == n));
@@ -352,20 +450,26 @@ async fn run_receiving_uat(app: &AppHandle) -> Result<Vec<UatItem>, String> {
       items.push(UatItem { name, status: "skip".into(), detail: "前面的步驟失敗, 後續情境依賴前一步的結果, 未執行".into() });
       continue;
     }
+    // outcome: (報告說明, 同一張 PO 上一筆 header 的 (狀態, 明細)); 後者用來產生 uat_task
     let outcome = match run_import(app, file).await {
       Ok(stdout) => match case {
-        Some(c) => verify_receiving_case(c, &fname, &stdout).await.map(|_| format!("匯入成功, 比對通過\n{}", stdout.trim())),
-        None => Ok(format!("匯入成功 (無比對規則)\n{}", stdout.trim())),
+        Some(c) => verify_receiving_case(c, &fname, &stdout).await.map(|prev| (format!("匯入成功, 比對通過\n{}", stdout.trim()), prev)),
+        None => Ok((format!("匯入成功 (無比對規則)\n{}", stdout.trim()), None)),
       },
       Err(e) => Err(e),
     };
     match outcome {
-      Ok(detail) => {
-        if case.is_some() {
-          verified.push(file);
-        } else {
-          unverified.push(fname.clone());
-        }
+      Ok((detail, prev)) => {
+        // 通過比對的情境立刻歸檔; 沒有比對規則的檔案沒被驗證過, 不歸檔, 留在原處並在報告註明
+        let detail = match case {
+          Some(c) => {
+            let cur: Vec<Line> = c.lines.iter().map(|(i, q)| (i.to_string(), *q)).collect();
+            let prev = prev.as_ref().map(|(status, lines)| (status.as_str(), lines.as_slice()));
+            tasks.extend(uat_diff::receiving_tasks(c.kind, c.po, c.status, &cur, prev));
+            format!("{detail}\n{}", archive_note(file))
+          }
+          None => format!("{detail}\n{fname}: 無比對規則, 未歸檔"),
+        };
         items.push(UatItem { name, status: "pass".into(), detail });
       }
       Err(detail) => {
@@ -375,19 +479,12 @@ async fn run_receiving_uat(app: &AppHandle) -> Result<Vec<UatItem>, String> {
     }
   }
 
-  // 情境是連續的, 全部通過才歸檔到 bak/; 有失敗就全部留在原處, 修正後可從頭重跑。
-  // 沒有比對規則的檔案 (檔名不是 SET nn 開頭) 沒被驗證過, 不歸檔, 留在原處並在報告註明
-  if !failed {
-    let notes = unverified.iter().map(|n| format!("{n}: 無比對規則, 未歸檔")).collect();
-    items.push(archive_report("850 測試檔歸檔", &verified, notes));
-  }
-
-  Ok(items)
+  Ok((items, tasks))
 }
 
 #[tauri::command]
 pub async fn run_uat_test(app: AppHandle, page: String, account: Option<String>) -> Result<UatResult, String> {
-  let items = match page.as_str() {
+  let (items, tasks) = match page.as_str() {
     "item_master" => run_item_master_uat(&app, account.as_deref()).await?,
     "receiving" => run_receiving_uat(&app).await?,
     other => return Err(format!("未知的頁面: {other}")),
@@ -395,12 +492,16 @@ pub async fn run_uat_test(app: AppHandle, page: String, account: Option<String>)
   let overall_status = if items.iter().any(|i| i.status == "fail") { "fail" } else { "pass" };
   let results_json = serde_json::to_value(&items).map_err(|e| format!("結果序列化失敗: {e}"))?;
 
+  // 沒有測試目的 (例如略過/前置檢查失敗) 就存 NULL, 列表只顯示一列
+  let kinds: Option<Vec<String>> = (!tasks.is_empty()).then(|| tasks.iter().map(|t| t.kind.clone()).collect());
+  let task_texts: Option<Vec<String>> = (!tasks.is_empty()).then(|| tasks.iter().map(|t| t.task.clone()).collect());
+
   let client = db::connect().await?;
   let row = client
     .query_one(
-      "INSERT INTO uat_runs (page, triggered_by, overall_status, results, finished_at) \
-       VALUES ($1, $2, $3, $4, now()) RETURNING id",
-      &[&page, &account, &overall_status, &results_json],
+      "INSERT INTO uat_runs (page, triggered_by, overall_status, results, finished_at, type, uat_task) \
+       VALUES ($1, $2, $3, $4, now(), $5, $6) RETURNING id",
+      &[&page, &account, &overall_status, &results_json, &kinds, &task_texts],
     )
     .await
     .map_err(|e| format!("寫入 uat_runs 失敗: {e}"))?;

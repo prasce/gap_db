@@ -4,3 +4,5 @@ node_modules
 doc/
 開發用圖片/
 .env
+
+SAMPLE_README.md

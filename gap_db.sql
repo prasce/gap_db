@@ -1039,8 +1039,14 @@ CREATE TABLE IF NOT EXISTS uat_runs (
     overall_status               VARCHAR(10) NOT NULL,
     results                      JSONB NOT NULL,
     started_at                   TIMESTAMPTZ NOT NULL DEFAULT now(),
-    finished_at                  TIMESTAMPTZ
+    finished_at                  TIMESTAMPTZ,
+    type                         TEXT[],
+    uat_task                     TEXT[]
 );
+
+-- 既有資料庫的 uat_runs 沒有 type / uat_task, CREATE TABLE IF NOT EXISTS 不會補欄位, 所以另外 ALTER (可重複執行)
+ALTER TABLE uat_runs ADD COLUMN IF NOT EXISTS type TEXT[];
+ALTER TABLE uat_runs ADD COLUMN IF NOT EXISTS uat_task TEXT[];
 
 CREATE INDEX IF NOT EXISTS ix_uat_runs_page ON uat_runs (page, started_at DESC);
 
@@ -1049,5 +1055,7 @@ COMMENT ON COLUMN uat_runs.page IS '觸發頁面: item_master (貨品主檔) / r
 COMMENT ON COLUMN uat_runs.triggered_by IS '觸發帳號, 對應 employees.account';
 COMMENT ON COLUMN uat_runs.overall_status IS '整體結果: pass / fail';
 COMMENT ON COLUMN uat_runs.results IS '逐項測試結果 JSON 陣列: [{name, status, detail}, ...], status 為 pass/fail/skip';
+COMMENT ON COLUMN uat_runs.type IS '測試目的類型 (與 uat_task 同索引成對的平行陣列); 832: ADD / UPDATE / DELETE; 850: ACTIVE / UPDATE_ADD_LINE / UPDATE_QTY / UPDATE_DELETE_LINE / CANCEL / REP_ACTIVE / ITEM_NOT_FOUND';
+COMMENT ON COLUMN uat_runs.uat_task IS '測試內容 (與 type 同索引成對); 832 ADD 固定記 SKU, UPDATE 記 "欄位名: 舊值 → 新值" (每個變更欄位一筆), DELETE 記 Delete; 850 記 "PO 號: 變更說明"';
 
 COMMIT;

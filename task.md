@@ -302,3 +302,11 @@ CREATE TABLE IF NOT EXISTS uat_runs (
 **驗證方式**：`cargo check`（乾淨）、`cargo test --lib`（3 項全過）、`tsc --noEmit`（無新錯誤）、`node --test scripts/*.test.mjs`（11 項全過，含抓到並修好的 `readResponse` bug）、`psql` 直接驗證 `is_admin`/`change_password` 的 SQL 邏輯（正確舊密碼才能改、改密碼後舊密碼失效、`must_change_password` 正確翻轉）、實際用真實 Gmail 帳號複測寄信仍正常。
 
 **⚠️ 修正過程中的意外插曲**：執行到一半發現 `doc/850-SKU existence/`、`850-scenario-2/3/5` 四個資料夾的測試檔全部不見了（資料夾變空）。確認過不是我這次的任何指令刪的（我的程式碼從頭到尾都沒有刪檔案的邏輯，只會刪資料庫裡的列），檢查 Windows 資源回收筒後發現這些檔案都在裡面（代表是用滑鼠/檔案總管刪除的，不是指令列強制刪除），已經全部還原回原本的檔名與位置，內容也核對過沒有損毀。如果你知道是什麼情況（例如你自己在檔案總管整理時誤刪），麻煩留意一下；如果不是你刪的，可能要注意一下這台機器上還有什麼東西會動到這個資料夾。
+
+## uat_runs 新增 type / uat_task (測試目的)
+
+- `uat_runs` 新增 `type TEXT[]`、`uat_task TEXT[]` 兩個平行陣列 (同索引成對), `gap_db.sql` 已含 `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`, 本機資料庫已套用; 既有 run 不回填 (NULL)。
+- 832: ADD 記 `SKU`; UPDATE 每個變更欄位一筆 `欄位: 舊值 → 新值` (以 customer_code + sku + long_description 第 1 碼比對本檔之前最新一筆); DELETE 記 `Delete`。
+- 850 (SET 01~07): `ACTIVE` / `UPDATE_ADD_LINE` / `UPDATE_QTY` / `UPDATE_DELETE_LINE` / `CANCEL` / `REP_ACTIVE` / `ITEM_NOT_FOUND`, uat_task 為 `PO 號: 變更說明`。
+- `uat_runs_recode` 以 LATERAL unnest 展開, 同一個 run_id 的多筆測試目的各佔一列; 「共 N 筆」以展開後的列計, 側欄計數仍為執行次數。
+- 比對邏輯在 `src-tauri/src/uat_diff.rs` (純函式 + 單元測試), 查舊資料在 `uat.rs` 的 `im_file_tasks`。

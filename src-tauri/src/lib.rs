@@ -18,6 +18,7 @@ use tauri_plugin_window_state;
 mod db;
 mod tray_icon;
 mod uat;
+mod uat_diff;
 mod utils;
 
 use tray_icon::{create_tray_icon, tray_update_lang, TrayState};

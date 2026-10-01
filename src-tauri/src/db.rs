@@ -331,10 +331,11 @@ pub struct UatRunFilter {
   triggered_by: Option<String>,
   overall_status: Option<String>,
   started_at: Option<String>,
+  run_id: Option<String>, // 精確比對 uat_runs.id (不是部分符合), 輸入 3 只會找 run 3, 不會找到 13、30
 }
 
 // (SQL 運算式, 別名); 與 src/views/UatRunsView.tsx 的 COLUMNS 相同順序; 時間以台北時區顯示
-const UAT_RUN_COLUMNS: [(&str, &str); 7] = [
+const UAT_RUN_COLUMNS: [(&str, &str); 9] = [
   // 別名不能叫 id: query_page 已固定輸出 id 欄 (列識別), 同名會衝突
   ("r.id", "run_id"),
   ("r.page", "page"),
@@ -342,6 +343,9 @@ const UAT_RUN_COLUMNS: [(&str, &str); 7] = [
   ("r.overall_status", "overall_status"),
   ("to_char(r.started_at AT TIME ZONE 'Asia/Taipei', 'YYYY-MM-DD HH24:MI:SS')", "started_at"),
   ("to_char(r.finished_at AT TIME ZONE 'Asia/Taipei', 'YYYY-MM-DD HH24:MI:SS')", "finished_at"),
+  // type / uat_task 是平行陣列, 下面 FROM 以 LATERAL unnest 展開, 同一個 run_id 的每筆測試目的各佔一列
+  ("t.type", "type"),
+  ("t.uat_task", "uat_task"),
   // results 是 [{name, status, detail}] 的 JSONB 陣列; 只顯示各狀態筆數, 有失敗項目時附上項目名稱
   (
     "SELECT format('通過 %s / 失敗 %s / 略過 %s',
@@ -358,16 +362,19 @@ const UAT_RUN_COLUMNS: [(&str, &str); 7] = [
 pub async fn query_uat_runs(filter: UatRunFilter, page: i64, page_size: i64) -> Result<Page, String> {
   let from_where = format!(
     "FROM uat_runs r
-     WHERE {} AND {} AND {} AND {}
-     ORDER BY r.started_at DESC, r.id DESC",
+     LEFT JOIN LATERAL unnest(r.type, r.uat_task) WITH ORDINALITY AS t(type, uat_task, ord) ON true
+     WHERE {} AND {} AND {} AND {} AND {}
+     ORDER BY r.started_at DESC, r.id DESC, t.ord",
     ilike(1, "r.page"),
     ilike(2, "r.triggered_by"),
     ilike(3, "r.overall_status"),
     // 與畫面顯示相同的台北時間字串比對, 輸入 2026-09-30 即可查當天
     ilike(4, "to_char(r.started_at AT TIME ZONE 'Asia/Taipei', 'YYYY-MM-DD HH24:MI:SS')"),
+    "($5::text IS NULL OR r.id::text = $5)",
   );
+  // 展開後同一個 run 會有多列, 列識別 (前端勾選/key) 要各自唯一: run id * 10000 + 序號 (沒有測試目的的舊紀錄序號為 0)
   query_page(
-    "r.id",
+    "r.id * 10000 + coalesce(t.ord, 0)",
     &UAT_RUN_COLUMNS,
     &from_where,
     &[
@@ -375,6 +382,7 @@ pub async fn query_uat_runs(filter: UatRunFilter, page: i64, page_size: i64) -> 
       &filter.triggered_by,
       &filter.overall_status,
       &filter.started_at,
+      &filter.run_id,
     ],
     page,
     page_size,
