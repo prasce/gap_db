@@ -92,7 +92,7 @@ fn qty(q: f64) -> String {
   if q.fract() == 0.0 { format!("{q:.0}") } else { q.to_string() }
 }
 
-// 850 一個情境的測試目的; prev 為同一張 PO 上一個通過情境的 (狀態, 明細), 沒有代表這是該 PO 第一次出現
+// 850 一個情境的測試目的; prev 為匯入前這張 PO 在資料庫的 (狀態, 明細) (同一張 PO 只有一份, 匯入會原地更新它), 沒有代表這是該 PO 第一次出現
 pub fn receiving_tasks(kind: &str, po: &str, status: &str, cur: &[Line], prev: Option<(&str, &[Line])>) -> Vec<UatTask> {
   let diff = prev.map(|(_, lines)| diff_lines(lines, cur)).unwrap_or_default();
   let prev_status = prev.map_or("(無)", |(s, _)| s);
@@ -102,7 +102,7 @@ pub fn receiving_tasks(kind: &str, po: &str, status: &str, cur: &[Line], prev: O
     "UPDATE_QTY" => diff.qty_changed.iter().map(|(i, o, n)| format!("{po}: {i} {} → {}", qty(*o), qty(*n))).collect(),
     "UPDATE_DELETE_LINE" => diff.removed.iter().map(|i| format!("{po}: -{i}")).collect(),
     "CANCEL" => vec![format!("{po}: {prev_status} → {status}")],
-    "REP_ACTIVE" => vec![format!("{po}: {prev_status} → {status}, 新增 header (舊 {prev_status} 資料保留)")],
+    "REP_ACTIVE" => vec![format!("{po}: {prev_status} → {status} (同一張 PO 原地更新)")],
     "ITEM_NOT_FOUND" => {
       let items: Vec<&str> = cur.iter().map(|(i, _)| i.as_str()).collect();
       vec![format!("{po}: {} (已寄警示信)", items.join(", "))]
@@ -206,7 +206,7 @@ mod tests {
     assert_eq!(receiving_tasks("CANCEL", "TEST0001", "CANCEL", &one, Some(("ACTIVE", &one)))[0].task, "TEST0001: ACTIVE → CANCEL");
     assert_eq!(
       receiving_tasks("REP_ACTIVE", "TEST0001", "ACTIVE", &one, Some(("CANCEL", &one)))[0].task,
-      "TEST0001: CANCEL → ACTIVE, 新增 header (舊 CANCEL 資料保留)"
+      "TEST0001: CANCEL → ACTIVE (同一張 PO 原地更新)"
     );
     assert_eq!(
       receiving_tasks("ITEM_NOT_FOUND", "TEST0002", "ACTIVE", &[line("TEST84338", 114.0), line("TEST91352", 114.0)], None)[0].task,

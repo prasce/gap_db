@@ -2,7 +2,7 @@
 // 執行: node --test scripts/*.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { detectImStatus, detectType, snake, toNull } from './import.mjs';
+import { detailKey, detectImStatus, detectType, groupRcRecords, planDetailSync, snake, toNull } from './import.mjs';
 
 test('toNull 把空字串轉成 null, 其餘原樣保留', () => {
   assert.equal(toNull(''), null);
@@ -34,4 +34,70 @@ test('detectImStatus 依檔名判斷 ADD/UPDATE/DELETE (不分大小寫)', () =>
 
 test('detectImStatus 對沒有 Add/Update/Delete 關鍵字的檔名丟出錯誤', () => {
   assert.throws(() => detectImStatus('832_Item_G53_003.im'), /檔名無法判斷事件類型/);
+});
+
+test('planDetailSync: 同品號更新(數量變更)、新品號新增、檔案裡沒有的舊行刪除', () => {
+  const existing = [
+    { id: 10, key: 'A' },
+    { id: 11, key: 'B' },
+  ];
+  const incoming = [
+    { key: 'A', fields: ['A200'] },
+    { key: 'C', fields: ['C1'] },
+  ];
+
+  const plan = planDetailSync(existing, incoming);
+
+  assert.deepEqual(plan.updates, [{ id: 10, fields: ['A200'] }]);
+  assert.deepEqual(plan.inserts, [['C1']]);
+  assert.deepEqual(plan.deleteIds, [11]);
+});
+
+test('planDetailSync: 檔案內同一品號出現多次時依出現順序與舊行配對', () => {
+  const existing = [
+    { id: 1, key: 'A' },
+    { id: 2, key: 'A' },
+  ];
+  const incoming = [
+    { key: 'A', fields: ['first'] },
+    { key: 'A', fields: ['second'] },
+    { key: 'A', fields: ['third'] },
+  ];
+
+  const plan = planDetailSync(existing, incoming);
+
+  assert.deepEqual(plan.updates, [
+    { id: 1, fields: ['first'] },
+    { id: 2, fields: ['second'] },
+  ]);
+  assert.deepEqual(plan.inserts, [['third']]);
+  assert.deepEqual(plan.deleteIds, []);
+});
+
+test('planDetailSync: 沒有舊行時全部新增, 沒有新行時全部刪除', () => {
+  assert.deepEqual(planDetailSync([], [{ key: 'A', fields: ['a'] }]), { updates: [], inserts: [['a']], deleteIds: [] });
+  assert.deepEqual(planDetailSync([{ id: 5, key: 'A' }], []), { updates: [], inserts: [], deleteIds: [5] });
+});
+
+test('detailKey: 完整品號 = f05 + f26, f26 為空時只用 f05', () => {
+  assert.equal(detailKey('32408433', '8'), '324084338');
+  assert.equal(detailKey('32408433', null), '32408433');
+});
+
+const HDR = ['RCPHDR', 'P1'];
+const DET = ['RCPDETL', 'item1'];
+const CTN = ['RCPCTNDR', 'c1'];
+
+test('groupRcRecords: 依 RCPHDR 分組, 明細與箱明細掛在最近一個表頭底下', () => {
+  const groups = groupRcRecords([HDR, DET, DET, CTN, ['RCPHDR', 'P2'], DET]);
+
+  assert.equal(groups.length, 2);
+  assert.deepEqual(groups[0].details.length, 2);
+  assert.deepEqual(groups[0].cartons.length, 1);
+  assert.deepEqual(groups[1].header, ['RCPHDR', 'P2']);
+  assert.equal(groups[1].details.length, 1);
+});
+
+test('groupRcRecords: RCPHDR 之前出現明細時丟出錯誤並指出行號', () => {
+  assert.throws(() => groupRcRecords([DET, HDR]), /第 1 行 RCPDETL 之前沒有 RCPHDR/);
 });

@@ -1,7 +1,7 @@
 // 「UAT 測試」按鈕: 貨品主檔/收貨明細頁面用, 讓 user 把測試檔放進指定資料夾後按鈕觸發, 依 task.md 規劃
 //   - 重用 scripts/import.mjs (透過 tauri-plugin-shell 直接執行 `node scripts/import.mjs --replace <file>`), 不在 Rust 重寫一份匯入邏輯
 //   - 832: 掃描 doc/832-uat-test/ 的 .im 檔, 匯入後順便驗證「一般使用者隱藏已刪除 SKU / 管理員可查完整歷史」邏輯
-//   - 850: 掃描 doc/850-uat-test/ 的 .rc 檔 (SET 01~07), 依檔名順序匯入, 每步比對同一張 PO 的狀態/明細行, 每個情境通過就立刻把該檔移到 bak/
+//   - 850: 掃描 doc/850-uat-test/ 的 .rc 檔 (SET 01~07), 依檔名順序匯入, 匯入前先確認同一張 PO 停在前一個情境通過後的狀態 (一個情境通過才能測下一個), 匯入後比對 PO 的狀態/明細行, 每個情境通過就立刻把該檔移到 bak/
 use crate::db;
 use crate::uat_diff::{self, ColumnChange, Line, UatTask};
 use serde::Serialize;
@@ -238,7 +238,7 @@ async fn run_item_master_uat(app: &AppHandle, account: Option<&str>) -> Result<(
 }
 
 // 850 UAT 情境 (doc/850-uat-test/ 的 SET 01~07): SET 01~06 是同一張 PO (TEST0001) 依序變化, 必須依檔名順序匯入,
-// 每一步都比對「該 PO 最新一次匯入」的 header 狀態與明細行; SET 07 是另一張 PO, 品號不在 832 (情境 6), 必須觸發警示信
+// 850 同一張 PO 只保留一份, 每個檔案都是原地更新它; 每一步匯入後都比對這張 PO 的 header 狀態與明細行; SET 07 是另一張 PO, 品號不在 832 (情境 6), 必須觸發警示信
 struct ReceivingCase {
   set_no: u32,
   label: &'static str,
@@ -289,59 +289,79 @@ fn parse_set_no(file_name: &str) -> Option<u32> {
   digits.parse().ok()
 }
 
-// 匯入後比對: 該 PO 最新一次匯入的 header 必須就是這個檔案, 且狀態、明細行 (依檔案順序) 與預期一致; 警示信有無也要符合預期
-async fn verify_receiving_case(
-  case: &ReceivingCase,
-  file_name: &str,
-  stdout: &str,
-) -> Result<Option<(String, Vec<Line>)>, String> {
-  let client = db::connect().await?;
-  let header = client
-    .query_opt(
-      "SELECT id, source_file, f13_order_status FROM gapwmc_850_header WHERE f06_po_number = $1 \
-       ORDER BY created_at DESC, id DESC LIMIT 1",
-      &[&case.po],
-    )
+// 同一張 PO 在資料庫的目前狀態: 850 同一張 PO 只保留一份 (再收到就原地更新, 見 scripts/import.mjs + ux_gapwmc_850_header_po)
+struct PoState {
+  header_id: i64,
+  source_file: String,
+  status: String,
+  lines: Vec<Line>,
+}
+
+async fn po_state(client: &tokio_postgres::Client, po: &str) -> Result<Option<PoState>, String> {
+  let Some(row) = client
+    .query_opt("SELECT id, source_file, f13_order_status FROM gapwmc_850_header WHERE f06_po_number = $1", &[&po])
     .await
     .map_err(|e| format!("驗證查詢失敗: {e}"))?
-    .ok_or_else(|| format!("資料庫找不到 PO {}", case.po))?;
-  let header_id: i64 = header.get("id");
-  let source_file: String = header.get("source_file");
-  let status: Option<String> = header.get("f13_order_status");
-  if source_file != file_name {
-    return Err(format!("PO {} 最新一筆是 {source_file}, 不是本檔", case.po));
-  }
-  let status = status.unwrap_or_default();
-  if status.trim() != case.status {
-    return Err(format!("PO {} 狀態應為 {}, 實際為 {}", case.po, case.status, status.trim()));
-  }
+  else {
+    return Ok(None);
+  };
+  let header_id: i64 = row.get("id");
+  let status: Option<String> = row.get("f13_order_status");
+  Ok(Some(PoState {
+    header_id,
+    source_file: row.get::<_, Option<String>>("source_file").unwrap_or_default(),
+    status: status.unwrap_or_default().trim().to_string(),
+    lines: header_lines(client, header_id).await?,
+  }))
+}
 
-  // GAP 要求一個情境通過才能測下一個: 同一張 PO 前面每個情境 (SET 編號較小者) 都必須已匯入且狀態沒變
-  // (含 CANCEL 那筆舊資料要原封不動留著; 之後同號 PO 再 ACTIVE 是新增 header, 不覆蓋舊的)。
-  // 前面的檔案通過後已移到 bak/, 所以用資料庫判斷而不是看檔案在不在; 檔名開頭 "SET nn " 就是 source_file 的前綴
-  for earlier in RECEIVING_CASES.iter().filter(|c| c.po == case.po && c.set_no < case.set_no) {
-    let prefix = format!("SET {:02} ", earlier.set_no);
-    let old = client
-      .query_opt(
-        "SELECT f13_order_status FROM gapwmc_850_header \
-         WHERE f06_po_number = $1 AND source_file LIKE $2 || '%' ORDER BY id DESC LIMIT 1",
-        &[&case.po, &prefix],
-      )
-      .await
-      .map_err(|e| format!("驗證查詢失敗: {e}"))?
-      .ok_or_else(|| format!("前一個情境 SET {:02} ({}) 尚未通過 (資料庫沒有它的匯入紀錄), 請依序先測完", earlier.set_no, earlier.label))?;
-    let kept: String = old.get::<_, Option<String>>("f13_order_status").unwrap_or_default();
-    if kept.trim() != earlier.status {
-      return Err(format!("前一個情境 SET {:02} 的資料應保留為 {}, 實際為 {}", earlier.set_no, earlier.status, kept.trim()));
+fn same_lines(actual: &[Line], expected: &[Line]) -> bool {
+  actual.len() == expected.len() && actual.iter().zip(expected).all(|(a, e)| a.0 == e.0 && (a.1 - e.1).abs() < 1e-9)
+}
+
+fn expected_lines(case: &ReceivingCase) -> Vec<Line> {
+  case.lines.iter().map(|(i, q)| (i.to_string(), *q)).collect()
+}
+
+// 匯入前檢查 (GAP 要求一個情境通過才能測下一個): 同一張 PO 前一個情境 (SET 編號較小者) 通過後留下的狀態, 必須就是資料庫現在的狀態。
+// 前面的檔案通過後已移到 bak/, 所以用資料庫判斷而不是看檔案在不在。這張 PO 的第一個情境則要求 PO 還不存在 (才是「新開 PO」)。
+// 回傳匯入前的 (狀態, 明細) 供產生 uat_task 比對用; 新開 PO 回傳 None
+async fn precheck_receiving_case(case: &ReceivingCase) -> Result<Option<(String, Vec<Line>)>, String> {
+  let client = db::connect().await?;
+  let state = po_state(&client, case.po).await?;
+  let earlier = RECEIVING_CASES.iter().filter(|c| c.po == case.po && c.set_no < case.set_no).max_by_key(|c| c.set_no);
+  match (earlier, state) {
+    (None, None) => Ok(None),
+    (None, Some(_)) => Err(format!(
+      "PO {po} 已存在於資料庫, 無法測「新開 PO」。請先刪除測試資料再測: DELETE FROM gapwmc_850_header WHERE f06_po_number = '{po}';",
+      po = case.po
+    )),
+    (Some(e), None) => Err(format!("前一個情境 SET {:02} ({}) 尚未通過 (資料庫沒有 PO {}), 請依序先測完", e.set_no, e.label, case.po)),
+    (Some(e), Some(s)) => {
+      if s.status != e.status || !same_lines(&s.lines, &expected_lines(e)) {
+        return Err(format!(
+          "PO {} 目前的狀態與前一個情境 SET {:02} ({}) 通過後應有的狀態不符 (預期 {} {:?}, 實際 {} {:?}), 請依序測試",
+          case.po, e.set_no, e.label, e.status, expected_lines(e), s.status, s.lines
+        ));
+      }
+      Ok(Some((s.status, s.lines)))
     }
   }
+}
 
-  let actual = header_lines(&client, header_id).await?;
-  let expected: Vec<(String, f64)> = case.lines.iter().map(|(i, q)| (i.to_string(), *q)).collect();
-  let same = actual.len() == expected.len()
-    && actual.iter().zip(&expected).all(|(a, e)| a.0 == e.0 && (a.1 - e.1).abs() < 1e-9);
-  if !same {
-    return Err(format!("明細行不符: 預期 {expected:?}, 實際 {actual:?}"));
+// 匯入後比對: 該 PO 只有一筆 header 且是被本檔更新的 (source_file 就是本檔), 狀態、明細行 (依檔案順序) 與預期一致; 警示信有無也要符合預期
+async fn verify_receiving_case(case: &ReceivingCase, file_name: &str, stdout: &str) -> Result<(), String> {
+  let client = db::connect().await?;
+  let state = po_state(&client, case.po).await?.ok_or_else(|| format!("資料庫找不到 PO {}", case.po))?;
+  if state.source_file != file_name {
+    return Err(format!("PO {} 最後更新的檔案是 {}, 不是本檔", case.po, state.source_file));
+  }
+  if state.status != case.status {
+    return Err(format!("PO {} 狀態應為 {}, 實際為 {}", case.po, case.status, state.status));
+  }
+  let expected = expected_lines(case);
+  if !same_lines(&state.lines, &expected) {
+    return Err(format!("明細行不符: 預期 {expected:?}, 實際 {:?}", state.lines));
   }
 
   let alerted = stdout.contains("已寄出警示信");
@@ -352,23 +372,7 @@ async fn verify_receiving_case(
       if alerted { "有" } else { "沒有" }
     ));
   }
-
-  // 回傳同一張 PO 本檔之前最新一筆 header 的 (狀態, 明細), 供產生 uat_task 比對用; 第一次出現的 PO 回傳 None。
-  // 從資料庫取而不是記在這次執行的記憶體, 這樣前面的情境是前幾天測完的也能正確比對
-  let prev = client
-    .query_opt(
-      "SELECT id, f13_order_status FROM gapwmc_850_header WHERE f06_po_number = $1 AND id < $2 ORDER BY id DESC LIMIT 1",
-      &[&case.po, &header_id],
-    )
-    .await
-    .map_err(|e| format!("驗證查詢失敗: {e}"))?;
-  match prev {
-    Some(row) => {
-      let prev_status: Option<String> = row.get("f13_order_status");
-      Ok(Some((prev_status.unwrap_or_default().trim().to_string(), header_lines(&client, row.get("id")).await?)))
-    }
-    None => Ok(None),
-  }
+  Ok(())
 }
 
 // 某筆 850 header 的明細行 (完整品號 = f05_item_number + f26_item_last_digit, 訂購數量), 依檔案順序
@@ -450,13 +454,16 @@ async fn run_receiving_uat(app: &AppHandle) -> Result<(Vec<UatItem>, Vec<UatTask
       items.push(UatItem { name, status: "skip".into(), detail: "前面的步驟失敗, 後續情境依賴前一步的結果, 未執行".into() });
       continue;
     }
-    // outcome: (報告說明, 同一張 PO 上一筆 header 的 (狀態, 明細)); 後者用來產生 uat_task
-    let outcome = match run_import(app, file).await {
-      Ok(stdout) => match case {
-        Some(c) => verify_receiving_case(c, &fname, &stdout).await.map(|prev| (format!("匯入成功, 比對通過\n{}", stdout.trim()), prev)),
-        None => Ok((format!("匯入成功 (無比對規則)\n{}", stdout.trim()), None)),
+    // outcome: (報告說明, 匯入前這張 PO 的 (狀態, 明細)); 後者用來產生 uat_task。順序: 匯入前檢查前一個情境 -> 匯入 -> 匯入後比對
+    let outcome = match case {
+      Some(c) => match precheck_receiving_case(c).await {
+        Ok(prev) => match run_import(app, file).await {
+          Ok(stdout) => verify_receiving_case(c, &fname, &stdout).await.map(|_| (format!("匯入成功, 比對通過\n{}", stdout.trim()), prev)),
+          Err(e) => Err(e),
+        },
+        Err(e) => Err(e),
       },
-      Err(e) => Err(e),
+      None => run_import(app, file).await.map(|stdout| (format!("匯入成功 (無比對規則)\n{}", stdout.trim()), None)),
     };
     match outcome {
       Ok((detail, prev)) => {

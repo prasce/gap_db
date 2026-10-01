@@ -48,7 +48,8 @@ pnpm run import-wms [--dry-run] [--replace] <files...>   # import WMS .im/.rc fi
 - **The importer depends on column order:** `import.mjs` reads column order from `information_schema` at run time. It maps the `fNN` columns positionally and maps `.im` header names to snake_case column names. So the ordinal order of `fNN` columns in `gap_db.sql` must match the file field order, and field-count mismatches are rejected.
 - **Importer behaviour:**
   - Each file is imported in one transaction.
-  - Duplicates are detected by `source_file` (the basename); `--replace` deletes the old rows first, and detail/carton rows cascade from the header.
+  - `.im` (832) is append-only: duplicates are detected by `source_file` (the basename), and `--replace` deletes that file's old rows first.
+  - `.rc` (850) keeps one copy per PO (`f06_po_number`, unique index `ux_gapwmc_850_header_po`). A repeated PO is updated in place: header columns are overwritten (`source_file` = last file, `updated_at` bumped), detail lines are synced to the file by full item number (`f05_item_number` + `f26_item_last_digit`: same item updated, new item inserted, missing item deleted), and cartons are replaced only if the file carries any. No history is kept. `--replace` only re-applies a file; it never deletes the PO.
   - Detail and carton rows attach to the most recent `RCPHDR` in the file.
 - **`item_master` is separate:** it has 278 columns from a *3M* ItemMaster mapping spec (SCALE ITM format). It is unrelated to Gap's `.im` layout, is kept at the user's request, and is empty.
 - **Source specs and samples:** they live in `doc/`, which is gitignored and never committed. `gap_db.sql` was originally generated from them by a throwaway script. Hand-edit it now, keeping the existing `COMMENT ON COLUMN` style: file position, EDI source element, sample value.

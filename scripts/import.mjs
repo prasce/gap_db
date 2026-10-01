@@ -4,7 +4,10 @@
 //
 // 用法: pnpm import-wms [--dry-run] [--replace] <檔案...>
 //   --dry-run  完整執行後 ROLLBACK, 只檢查不寫入
-//   --replace  同檔名已匯入過時, 先刪除舊資料再匯入 (預設為略過)
+//   --replace  同檔名已匯入過時重新套用 (預設為略過); .im 先刪除該檔舊資料再匯入, .rc 因為同一張 PO 本來就是原地更新, 不需要刪除
+//
+// 850 (.rc) 同一張 PO (f06_po_number) 只保留一份: 第一次收到新增, 再收到就原地更新 header / 明細 (數量、狀態等),
+// 明細以檔案內容為準 (新品號新增、檔案沒有的舊行刪除)。832 (.im) 仍是 append-only。
 // 連線設定讀取專案根目錄的 .env (PGHOST / PGPORT / PGDATABASE / PGUSER / PGPASSWORD)
 
 import { existsSync, readFileSync } from 'fs';
@@ -95,61 +98,166 @@ async function importIm(client, lines, sourceFile) {
   return { counts: { [IM_TABLE]: rows.length }, type: 'im', poNumber: null, detailItems: [] };
 }
 
+// 明細行配對鍵: 完整品號 (f05_item_number + f26_item_last_digit), 與 832 的 sku || left(long_description, 1) 對應
+export const detailKey = (itemNumber, lastDigit) => (itemNumber ?? '') + (lastDigit ?? '');
+
+// 把 .rc 的記錄 (已用 | 切成欄位陣列) 依 RCPHDR 分組: 明細 / 箱明細掛在最近一個表頭底下。
+// 一個檔案通常只有一張 PO, 但格式允許多個 RCPHDR
+export function groupRcRecords(records) {
+  const groups = [];
+  for (const [i, fields] of records.entries()) {
+    const type = fields[0];
+    if (!RC_TABLES[type]) throw new Error(`第 ${i + 1} 行: 未知的記錄類型 ${type}`);
+    if (type === 'RCPHDR') {
+      groups.push({ header: fields, details: [], cartons: [] });
+      continue;
+    }
+    const current = groups[groups.length - 1];
+    if (!current) throw new Error(`第 ${i + 1} 行 ${type} 之前沒有 RCPHDR`);
+    (type === 'RCPDETL' ? current.details : current.cartons).push(fields);
+  }
+  return groups;
+}
+
+// 同一張 PO 再收到時, 明細以「檔案內容為準」同步: 品號相同 -> 原地更新 (例如數量), 檔案新出現的品號 -> 新增,
+// 檔案裡已經沒有的舊行 -> 刪除。existing: [{id, key}] (依 id 排序), incoming: [{key, fields}] (依檔案順序)。
+// 同一品號重複出現時依出現順序一對一配對。純函式, 不碰資料庫
+export function planDetailSync(existing, incoming) {
+  const idsByKey = new Map();
+  for (const { id, key } of existing) idsByKey.set(key, [...(idsByKey.get(key) ?? []), id]);
+
+  const updates = [];
+  const inserts = [];
+  for (const { key, fields } of incoming) {
+    const ids = idsByKey.get(key) ?? [];
+    if (ids.length > 0) {
+      updates.push({ id: ids[0], fields });
+      idsByKey.set(key, ids.slice(1));
+    } else {
+      inserts.push(fields);
+    }
+  }
+  const deleteIds = [...idsByKey.values()].flat().sort((a, b) => a - b);
+  return { updates, inserts, deleteIds };
+}
+
+async function updateRow(client, table, id, cols, values, extraSql = '') {
+  const sets = cols.map((c, i) => `${c} = $${i + 1}`).join(', ');
+  await client.query(`UPDATE ${table} SET ${sets}${extraSql} WHERE id = $${cols.length + 1}`, [...values, id]);
+}
+
+// 套用一張 PO: 沒有就新增 header / detail / carton; 已經有 (同 f06_po_number) 就原地更新, 同一張 PO 永遠只有一份。
+// 箱明細 (RCPCTNDR) 只有檔案帶了才整批取代; 檔案沒帶箱明細 (例如只有兩層的 DPO) 時保留原本的, 不當成「全部刪除」
+async function applyPo(client, group, sourceFile, fieldCols, poNumberIdx) {
+  const poNumber = toNull(group.header[poNumberIdx]);
+  if (!poNumber) throw new Error('RCPHDR 沒有 PO 號 (f06_po_number), 無法判斷是新增還是更新');
+  const headerValues = group.header.map(toNull);
+
+  const found = await client.query(`SELECT id FROM ${RC_TABLES.RCPHDR} WHERE f06_po_number = $1 FOR UPDATE`, [poNumber]);
+  const isNew = found.rows.length === 0;
+  let headerId;
+  if (isNew) {
+    headerId = await insert(client, RC_TABLES.RCPHDR, ['source_file', ...fieldCols.RCPHDR], [sourceFile, ...headerValues]);
+  } else {
+    headerId = found.rows[0].id;
+    await updateRow(client, RC_TABLES.RCPHDR, headerId, ['source_file', ...fieldCols.RCPHDR], [sourceFile, ...headerValues], ', updated_at = now()');
+  }
+
+  const itemIdx = fieldCols.RCPDETL.indexOf('f05_item_number');
+  const digitIdx = fieldCols.RCPDETL.indexOf('f26_item_last_digit');
+  const incoming = group.details.map((fields) => {
+    const values = fields.map(toNull);
+    return { key: detailKey(values[itemIdx], values[digitIdx]), fields: values };
+  });
+  const existingRows = isNew
+    ? []
+    : (
+        await client.query(
+          `SELECT id, f05_item_number, f26_item_last_digit FROM ${RC_TABLES.RCPDETL} WHERE header_id = $1 ORDER BY id`,
+          [headerId]
+        )
+      ).rows;
+  const plan = planDetailSync(
+    existingRows.map((r) => ({ id: r.id, key: detailKey(r.f05_item_number, r.f26_item_last_digit) })),
+    incoming
+  );
+  for (const { id, fields } of plan.updates) await updateRow(client, RC_TABLES.RCPDETL, id, fieldCols.RCPDETL, fields);
+  for (const fields of plan.inserts) {
+    await insert(client, RC_TABLES.RCPDETL, ['header_id', ...fieldCols.RCPDETL], [headerId, ...fields]);
+  }
+  if (plan.deleteIds.length > 0) {
+    await client.query(`DELETE FROM ${RC_TABLES.RCPDETL} WHERE id = ANY($1)`, [plan.deleteIds]);
+  }
+
+  if (group.cartons.length > 0) {
+    await client.query(`DELETE FROM ${RC_TABLES.RCPCTNDR} WHERE header_id = $1`, [headerId]);
+    for (const fields of group.cartons) {
+      await insert(client, RC_TABLES.RCPCTNDR, ['header_id', ...fieldCols.RCPCTNDR], [headerId, ...fields.map(toNull)]);
+    }
+  }
+
+  return {
+    poNumber,
+    action: isNew ? '新增' : '更新',
+    lines: { inserted: plan.inserts.length, updated: plan.updates.length, deleted: plan.deleteIds.length },
+    detailItems: incoming.filter((l) => l.key).map((l) => ({ itemNumber: l.fields[itemIdx], lastDigit: l.fields[digitIdx] })),
+  };
+}
+
 async function importRc(client, lines, sourceFile) {
   const fieldCols = {};
   for (const [type, table] of Object.entries(RC_TABLES)) {
     fieldCols[type] = (await tableColumns(client, table)).filter((c) => /^f\d\d/.test(c));
   }
   const poNumberIdx = fieldCols.RCPHDR.indexOf('f06_po_number');
-  const itemNumberIdx = fieldCols.RCPDETL.indexOf('f05_item_number');
-  const lastDigitIdx = fieldCols.RCPDETL.indexOf('f26_item_last_digit');
+
+  const records = lines.map((line) => line.split('|'));
+  for (const [i, fields] of records.entries()) {
+    const table = RC_TABLES[fields[0]];
+    if (!table) throw new Error(`第 ${i + 1} 行: 未知的記錄類型 ${fields[0]}`);
+    const cols = fieldCols[fields[0]];
+    if (fields.length !== cols.length) {
+      throw new Error(`第 ${i + 1} 行 ${fields[0]} 有 ${fields.length} 欄, ${table} 定義為 ${cols.length} 欄`);
+    }
+  }
 
   const counts = Object.fromEntries(Object.values(RC_TABLES).map((t) => [t, 0]));
-  const detailItems = [];
-  let poNumber = null;
-  let headerId = null;
-  for (const [i, line] of lines.entries()) {
-    const fields = line.split('|');
-    const type = fields[0];
-    const table = RC_TABLES[type];
-    if (!table) throw new Error(`第 ${i + 1} 行: 未知的記錄類型 ${type}`);
-    const cols = fieldCols[type];
-    if (fields.length !== cols.length) {
-      throw new Error(`第 ${i + 1} 行 ${type} 有 ${fields.length} 欄, ${table} 定義為 ${cols.length} 欄`);
-    }
+  for (const fields of records) counts[RC_TABLES[fields[0]]]++;
 
-    if (type === 'RCPHDR') {
-      headerId = await insert(client, table, ['source_file', ...cols], [sourceFile, ...fields.map(toNull)]);
-      if (poNumberIdx >= 0) poNumber = toNull(fields[poNumberIdx]);
-    } else {
-      if (headerId === null) throw new Error(`第 ${i + 1} 行 ${type} 之前沒有 RCPHDR`);
-      await insert(client, table, ['header_id', ...cols], [headerId, ...fields.map(toNull)]);
-      if (type === 'RCPDETL' && itemNumberIdx >= 0) {
-        const itemNumber = toNull(fields[itemNumberIdx]);
-        const lastDigit = lastDigitIdx >= 0 ? toNull(fields[lastDigitIdx]) : null;
-        if (itemNumber) detailItems.push({ itemNumber, lastDigit });
-      }
-    }
-    counts[table]++;
+  const changes = [];
+  for (const group of groupRcRecords(records)) {
+    changes.push(await applyPo(client, group, sourceFile, fieldCols, poNumberIdx));
   }
-  return { counts, type: 'rc', poNumber, detailItems };
+  return {
+    counts,
+    type: 'rc',
+    poNumber: changes[0]?.poNumber ?? null,
+    detailItems: changes.flatMap((c) => c.detailItems),
+    changes,
+  };
 }
 
 async function importFile(client, file, { replace }) {
   const lines = readLines(file);
   const type = detectType(lines);
   const sourceFile = basename(file);
-  // 850 的 detail / carton 以 ON DELETE CASCADE 跟著表頭刪除
-  const ownerTable = type === 'im' ? IM_TABLE : RC_TABLES.RCPHDR;
 
-  const { rows } = await client.query(`SELECT count(*)::int AS n FROM ${ownerTable} WHERE source_file = $1`, [
-    sourceFile,
-  ]);
-  if (rows[0].n > 0) {
-    if (!replace) return { skipped: `已匯入過 (${ownerTable} 有 ${rows[0].n} 筆), 加上 --replace 可重新匯入` };
-    await client.query(`DELETE FROM ${ownerTable} WHERE source_file = $1`, [sourceFile]);
+  if (type === 'rc') {
+    // 850: 同一張 PO 只保留一份, 再收到就原地更新 (見 applyPo), 所以 --replace 不需要先刪除。
+    // header.source_file 記的是「最後一次更新這張 PO 的檔案」, 沒加 --replace 時同一個檔案不重複套用
+    const { rows } = await client.query(`SELECT count(*)::int AS n FROM ${RC_TABLES.RCPHDR} WHERE source_file = $1`, [sourceFile]);
+    if (rows[0].n > 0 && !replace) {
+      return { skipped: `已匯入過 (${RC_TABLES.RCPHDR} 有 ${rows[0].n} 筆), 加上 --replace 可重新套用` };
+    }
+    return importRc(client, lines, sourceFile);
   }
-  return type === 'im' ? importIm(client, lines, sourceFile) : importRc(client, lines, sourceFile);
+
+  const { rows } = await client.query(`SELECT count(*)::int AS n FROM ${IM_TABLE} WHERE source_file = $1`, [sourceFile]);
+  if (rows[0].n > 0) {
+    if (!replace) return { skipped: `已匯入過 (${IM_TABLE} 有 ${rows[0].n} 筆), 加上 --replace 可重新匯入` };
+    await client.query(`DELETE FROM ${IM_TABLE} WHERE source_file = $1`, [sourceFile]);
+  }
+  return importIm(client, lines, sourceFile);
 }
 
 // 850 情境 6: 明細品號在 gapwmc_832_item 中完全找不到 (不論 status), 視為「未收到 Item Master 即收到 DPO」
@@ -202,6 +310,10 @@ async function main() {
         await client.query(dryRun ? 'ROLLBACK' : 'COMMIT');
         const summary = result.skipped ?? Object.entries(result.counts).map(([t, n]) => `${t} ${n} 筆`).join(', ');
         console.log(`${dryRun ? '[dry-run] ' : ''}${file}: ${summary}`);
+        for (const c of result.changes ?? []) {
+          const { inserted, updated, deleted } = c.lines;
+          console.log(`  -> PO ${c.poNumber}: ${c.action} (明細 新增 ${inserted} / 更新 ${updated} / 刪除 ${deleted})`);
+        }
 
         if (!dryRun && !result.skipped) {
           // 警示信寄送失敗不影響匯入結果 (資料已經 COMMIT), 只在畫面上提示
