@@ -27,18 +27,66 @@ export function readResponse(socket) {
   });
 }
 
+// RFC 2047: 標頭 (主旨/寄件人名稱) 含中文時必須編成 =?UTF-8?B?...?=, 否則 Gmail 會當成未知編碼, 中文全部變成 ?。
+// 每個編碼字不超過 75 字元 (去掉前後綴後 base64 最多 63 字元 = 45 bytes), 以字元為單位切, 不會把一個中文字切成兩半
+export function encodeHeader(text) {
+  if (/^[\x00-\x7f]*$/.test(text)) return text;
+  const words = [];
+  let chunk = '';
+  for (const ch of text) {
+    if (Buffer.byteLength(chunk + ch) > 45) {
+      words.push(chunk);
+      chunk = '';
+    }
+    chunk += ch;
+  }
+  if (chunk) words.push(chunk);
+  return words.map((w) => `=?UTF-8?B?${Buffer.from(w).toString('base64')}?=`).join('\r\n ');
+}
+
+// ALERT_EMAIL_TO 可以用分號或逗號放多個收件人, 例如 "a@x.com;b@y.com"
+export function parseRecipients(text) {
+  return text
+    .split(/[;,]/)
+    .map((r) => r.trim())
+    .filter(Boolean);
+}
+
+// "名稱 <信箱>" 只編碼名稱部分, 信箱維持 ASCII
+function formatAddress(value) {
+  const match = value.match(/^(.*?)\s*<([^>]+)>$/);
+  if (!match || !match[1]) return value;
+  return `${encodeHeader(match[1].replace(/^"|"$/g, ''))} <${match[2]}>`;
+}
+
+// 組成完整信件 (不含結尾的 "." 行): 標頭與內文全部是 ASCII, 內文以 UTF-8 + base64 傳輸, 所以中文與開頭是 "." 的行都不會出問題
+export function buildMessage({ from, recipients, subject, body }) {
+  const base64Body = Buffer.from(body, 'utf8').toString('base64').match(/.{1,76}/g) ?? [];
+  return [
+    `From: ${formatAddress(from)}`,
+    `To: ${recipients.join(', ')}`,
+    `Subject: ${encodeHeader(subject)}`,
+    'MIME-Version: 1.0',
+    'Content-Type: text/plain; charset=UTF-8',
+    'Content-Transfer-Encoding: base64',
+    '',
+    ...base64Body,
+  ].join('\r\n');
+}
+
 async function smtpCommand(socket, line) {
   socket.write(line + '\r\n');
   return readResponse(socket);
 }
 
-// subject/body: 信件內容; to 預設寄給 EMAIL_USER 自己 (可用 ALERT_EMAIL_TO 覆寫收件人)
+// subject/body: 信件內容; to 預設寄給 EMAIL_USER 自己 (可用 ALERT_EMAIL_TO 覆寫收件人, 多個收件人以分號或逗號分隔)
 export async function sendAlertEmail({ subject, body, to }) {
   const { EMAIL_USER, EMAIL_PASS, EMAIL_FROM, ALERT_EMAIL_TO } = process.env;
   if (!EMAIL_USER || !EMAIL_PASS) {
     throw new Error('缺少 EMAIL_USER / EMAIL_PASS 環境變數, 無法寄送警示信');
   }
-  const recipient = to ?? ALERT_EMAIL_TO ?? EMAIL_USER;
+  const recipients = parseRecipients(to ?? ALERT_EMAIL_TO ?? EMAIL_USER);
+  if (recipients.length === 0) throw new Error('沒有收件人 (ALERT_EMAIL_TO 是空的)');
 
   await new Promise((resolve, reject) => {
     let settled = false;
@@ -59,17 +107,13 @@ export async function sendAlertEmail({ subject, body, to }) {
         if (!authRes.startsWith('235')) throw new Error('Gmail 驗證失敗: ' + authRes.trim());
 
         await smtpCommand(socket, `MAIL FROM:<${EMAIL_USER}>`);
-        await smtpCommand(socket, `RCPT TO:<${recipient}>`);
+        for (const recipient of recipients) {
+          const rcptRes = await smtpCommand(socket, `RCPT TO:<${recipient.replace(/^.*<|>$/g, '')}>`);
+          if (!rcptRes.startsWith('250')) throw new Error(`收件人 ${recipient} 被拒絕: ` + rcptRes.trim());
+        }
         await smtpCommand(socket, 'DATA');
-        const message = [
-          `From: ${EMAIL_FROM || EMAIL_USER}`,
-          `To: ${recipient}`,
-          `Subject: ${subject}`,
-          '',
-          body,
-          '.',
-        ].join('\r\n');
-        const sendRes = await smtpCommand(socket, message);
+        const message = buildMessage({ from: EMAIL_FROM || EMAIL_USER, recipients, subject, body });
+        const sendRes = await smtpCommand(socket, message + '\r\n.');
         if (!sendRes.startsWith('250')) throw new Error('寄送失敗: ' + sendRes.trim());
 
         await smtpCommand(socket, 'QUIT');
