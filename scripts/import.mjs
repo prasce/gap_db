@@ -201,7 +201,9 @@ async function applyPo(client, group, sourceFile, fieldCols, poNumberIdx) {
     existingRows.map((r) => ({ id: r.id, key: detailKey(r.f05_item_number, r.f26_item_last_digit) })),
     incoming
   );
-  for (const { id, fields } of plan.updates) await updateRow(client, RC_TABLES.RCPDETL, id, fieldCols.RCPDETL, fields);
+  for (const { id, fields } of plan.updates) {
+    await updateRow(client, RC_TABLES.RCPDETL, id, fieldCols.RCPDETL, fields, ', updated_at = now()');
+  }
   for (const fields of plan.inserts) {
     await insert(client, RC_TABLES.RCPDETL, ['header_id', ...fieldCols.RCPDETL], [headerId, ...fields]);
   }

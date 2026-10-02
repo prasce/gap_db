@@ -906,10 +906,15 @@ CREATE TABLE IF NOT EXISTS gapwmc_850_detail (
     created_at                   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- 舊資料庫沒有 updated_at 時用這行補上 (既有資料的 updated_at 會是執行當下的時間)
+ALTER TABLE gapwmc_850_detail ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
+
 CREATE INDEX IF NOT EXISTS ix_gapwmc_850_detail_header ON gapwmc_850_detail (header_id);
 CREATE INDEX IF NOT EXISTS ix_gapwmc_850_detail_item ON gapwmc_850_detail (f05_item_number);
 
 COMMENT ON TABLE gapwmc_850_detail IS 'GAPWMC_850 收貨明細 (RCPDETL), 以 header_id 連到 gapwmc_850_header';
+COMMENT ON COLUMN gapwmc_850_detail.created_at IS '這一行明細第一次寫入的時間';
+COMMENT ON COLUMN gapwmc_850_detail.updated_at IS '這一行明細最後一次被更新的時間 (第一次寫入時等於 created_at)';
 COMMENT ON COLUMN gapwmc_850_detail.header_id IS '對應 gapwmc_850_header.id';
 COMMENT ON COLUMN gapwmc_850_detail.f01_record_type IS '檔案第 1 欄; 記錄類型 RCPDETL; 範例值: RCPDETL';
 COMMENT ON COLUMN gapwmc_850_detail.f02_interface_record_id IS '檔案第 2 欄; 對應表頭 f02_interface_record_id; 範例值: 62028556';

@@ -263,7 +263,7 @@ pub struct ReceiptFilter {
 }
 
 // (SQL 運算式, 別名); 只列已命名的欄位; 與 src/views/ReceivingView.tsx 的 COLUMNS 相同順序
-const RECEIPT_850_COLUMNS: [(&str, &str); 18] = [
+const RECEIPT_850_COLUMNS: [(&str, &str); 20] = [
   ("h.f06_po_number", "f06_po_number"),
   ("h.f03_receipt_id", "f03_receipt_id"),
   ("h.f04_receipt_id_type", "f04_receipt_id_type"),
@@ -287,6 +287,9 @@ const RECEIPT_850_COLUMNS: [(&str, &str); 18] = [
      WHERE c.header_id = d.header_id AND c.f03_line_ref = d.f03_line_ref",
     "carton_f08_line_number",
   ),
+  // 這一行明細第一次寫入 / 最後一次被更新的時間 (detail 的 created_at / updated_at), 台北時間
+  ("to_char(d.created_at AT TIME ZONE 'Asia/Taipei', 'YYYY-MM-DD HH24:MI:SS')", "created_at"),
+  ("to_char(d.updated_at AT TIME ZONE 'Asia/Taipei', 'YYYY-MM-DD HH24:MI:SS')", "updated_at"),
 ];
 
 #[tauri::command]
