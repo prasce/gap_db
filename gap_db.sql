@@ -751,9 +751,12 @@ CREATE INDEX IF NOT EXISTS ix_gapwmc_850_header_po ON gapwmc_850_header (f06_po_
 -- (detail / carton 會跟著 ON DELETE CASCADE 刪除), 確認資料沒問題後再執行:
 --   DELETE FROM gapwmc_850_header h USING gapwmc_850_header newer
 --    WHERE h.f06_po_number = newer.f06_po_number AND h.id < newer.id;
-CREATE UNIQUE INDEX IF NOT EXISTS ux_gapwmc_850_header_po ON gapwmc_850_header (f06_po_number) WHERE f06_po_number IS NOT NULL;
+-- 唯一索引只限「未取消」的 PO: CANCEL 只改狀態、保留在資料庫; 取消後再收到 ACTIVE 會新增一筆, 所以同一張 PO 可以有 CANCEL 歷史筆 + 一筆有效筆。
+-- 舊資料庫已有舊版 (不分狀態) 的同名索引, 要先 DROP INDEX ux_gapwmc_850_header_po; 再執行下面這行:
+CREATE UNIQUE INDEX IF NOT EXISTS ux_gapwmc_850_header_po ON gapwmc_850_header (f06_po_number)
+  WHERE f06_po_number IS NOT NULL AND upper(trim(coalesce(f13_order_status, ''))) NOT IN ('CANCEL', 'CANCELLED');
 
-COMMENT ON TABLE gapwmc_850_header IS 'GAPWMC_850 收貨表頭 (RCPHDR); 同一張 PO (f06_po_number) 只有一筆, 再收到就原地更新';
+COMMENT ON TABLE gapwmc_850_header IS 'GAPWMC_850 收貨表頭 (RCPHDR); 同一張 PO (f06_po_number) 同時只有一筆有效的, 再收到就原地更新; CANCEL 只改狀態保留, 取消後再 ACTIVE 則新增一筆';
 COMMENT ON COLUMN gapwmc_850_header.source_file IS '最後一次新增或更新這張 PO 的來源檔名';
 COMMENT ON COLUMN gapwmc_850_header.created_at IS '這張 PO 第一次收到的時間';
 COMMENT ON COLUMN gapwmc_850_header.updated_at IS '最後一次被更新的時間 (第一次收到時等於 created_at)';

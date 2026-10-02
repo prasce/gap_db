@@ -238,7 +238,7 @@ async fn run_item_master_uat(app: &AppHandle, account: Option<&str>) -> Result<(
 }
 
 // 850 UAT 情境 (doc/850-uat-test/ 的 SET 01~07): SET 01~06 是同一張 PO (TEST0001) 依序變化, 必須依檔名順序匯入,
-// 850 同一張 PO 只保留一份, 每個檔案都是原地更新它; 每一步匯入後都比對這張 PO 的 header 狀態與明細行; SET 07 是另一張 PO, 品號不在 832 (情境 7), 必須被擋下 (不寫入資料庫) 並寄警示信
+// 850 同一張 PO 同時只有一份有效的, 每個檔案都是原地更新它 (CANCEL 只改狀態保留); SET 06 重新啟用則新增一筆, 舊的 CANCEL 筆保留; 每一步匯入後都比對這張 PO 的 header 狀態與明細行; SET 07 是另一張 PO, 品號不在 832 (情境 7), 必須被擋下 (不寫入資料庫) 並寄警示信
 struct ReceivingCase {
   set_no: u32,
   label: &'static str,
@@ -271,7 +271,7 @@ const RECEIVING_CASES: [ReceivingCase; 7] = [
   },
   ReceivingCase { set_no: 4, kind: "UPDATE_DELETE_LINE", label: "情境 2 - 刪除 SKU/Size", po: "TEST0001", status: "ACTIVE", lines: &[("324084338", 200.0)], expect_blocked: false },
   ReceivingCase { set_no: 5, kind: "CANCEL", label: "情境 4 - 取消 PO", po: "TEST0001", status: "CANCEL", lines: &[("324084338", 200.0)], expect_blocked: false },
-  ReceivingCase { set_no: 6, kind: "REP_ACTIVE", label: "情境 5 - 重新啟用 PO", po: "TEST0001", status: "ACTIVE", lines: &[("324084338", 200.0)], expect_blocked: false },
+  ReceivingCase { set_no: 6, kind: "REP_ACTIVE", label: "情境 5 - 重新啟用 PO (新增一筆)", po: "TEST0001", status: "ACTIVE", lines: &[("324084338", 200.0)], expect_blocked: false },
   ReceivingCase {
     set_no: 7,
     kind: "ITEM_NOT_FOUND",
@@ -289,9 +289,12 @@ fn parse_set_no(file_name: &str) -> Option<u32> {
   digits.parse().ok()
 }
 
-// 同一張 PO 在資料庫的目前狀態: 850 同一張 PO 只保留一份 (再收到就原地更新, 見 scripts/import.mjs + ux_gapwmc_850_header_po)
+// 同一張 PO 在資料庫的目前狀態: 取最新一筆 header (同一張 PO 同時只有一份有效的, 再收到就原地更新; CANCEL 只改狀態保留,
+// CANCEL 之後再 ACTIVE 會新增一筆, 見 scripts/import.mjs pickTargetHeader + ux_gapwmc_850_header_po)
 struct PoState {
   header_id: i64,
+  header_count: i64, // 這張 PO 目前共有幾筆 header (含已取消保留的)
+  cancelled_count: i64,
   source_file: String,
   status: String,
   lines: Vec<Line>,
@@ -299,7 +302,10 @@ struct PoState {
 
 async fn po_state(client: &tokio_postgres::Client, po: &str) -> Result<Option<PoState>, String> {
   let Some(row) = client
-    .query_opt("SELECT id, source_file, f13_order_status FROM gapwmc_850_header WHERE f06_po_number = $1", &[&po])
+    .query_opt(
+      "SELECT id, source_file, f13_order_status, count(*) OVER () AS header_count,               count(*) FILTER (WHERE upper(trim(f13_order_status)) IN ('CANCEL', 'CANCELLED')) OVER () AS cancelled_count        FROM gapwmc_850_header WHERE f06_po_number = $1 ORDER BY id DESC LIMIT 1",
+      &[&po],
+    )
     .await
     .map_err(|e| format!("驗證查詢失敗: {e}"))?
   else {
@@ -309,6 +315,8 @@ async fn po_state(client: &tokio_postgres::Client, po: &str) -> Result<Option<Po
   let status: Option<String> = row.get("f13_order_status");
   Ok(Some(PoState {
     header_id,
+    header_count: row.get("header_count"),
+    cancelled_count: row.get("cancelled_count"),
     source_file: row.get::<_, Option<String>>("source_file").unwrap_or_default(),
     status: status.unwrap_or_default().trim().to_string(),
     lines: header_lines(client, header_id).await?,
@@ -349,7 +357,13 @@ async fn precheck_receiving_case(case: &ReceivingCase) -> Result<Option<(String,
   }
 }
 
-// 匯入後比對: 該 PO 只有一筆 header 且是被本檔更新的 (source_file 就是本檔), 狀態、明細行 (依檔案順序) 與預期一致; 警示信有無也要符合預期
+// 這個情境匯入後, 這張 PO 預期有幾筆 header: 每個「重新啟用」(REP_ACTIVE) 都會新增一筆, 其餘情境原地更新
+fn expected_header_count(case: &ReceivingCase) -> i64 {
+  1 + RECEIVING_CASES.iter().filter(|c| c.po == case.po && c.kind == "REP_ACTIVE" && c.set_no <= case.set_no).count() as i64
+}
+
+// 匯入後比對: 最新一筆 header 是被本檔寫入的 (source_file 就是本檔), 狀態、明細行 (依檔案順序) 與預期一致, header 筆數正確
+// (CANCEL 只改狀態不刪除, 重新啟用則新增一筆且舊的 CANCEL 筆保留)
 async fn verify_receiving_case(case: &ReceivingCase, file_name: &str) -> Result<(), String> {
   let client = db::connect().await?;
   let state = po_state(&client, case.po).await?.ok_or_else(|| format!("資料庫找不到 PO {}", case.po))?;
@@ -362,6 +376,13 @@ async fn verify_receiving_case(case: &ReceivingCase, file_name: &str) -> Result<
   let expected = expected_lines(case);
   if !same_lines(&state.lines, &expected) {
     return Err(format!("明細行不符: 預期 {expected:?}, 實際 {:?}", state.lines));
+  }
+  let expected_count = expected_header_count(case);
+  if state.header_count != expected_count {
+    return Err(format!("PO {} 應有 {expected_count} 筆 header, 實際 {} 筆", case.po, state.header_count));
+  }
+  if case.kind == "REP_ACTIVE" && state.cancelled_count < 1 {
+    return Err(format!("PO {} 重新啟用後, 舊的 CANCEL 那筆應保留, 但資料庫沒有已取消的 header", case.po));
   }
   Ok(())
 }

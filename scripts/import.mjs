@@ -6,8 +6,9 @@
 //   --dry-run  完整執行後 ROLLBACK, 只檢查不寫入
 //   --replace  同檔名已匯入過時重新套用 (預設為略過); .im 先刪除該檔舊資料再匯入, .rc 因為同一張 PO 本來就是原地更新, 不需要刪除
 //
-// 850 (.rc) 同一張 PO (f06_po_number) 只保留一份: 第一次收到新增, 再收到就原地更新 header / 明細 (數量、狀態等),
-// 明細以檔案內容為準 (新品號新增、檔案沒有的舊行刪除)。832 (.im) 仍是 append-only。
+// 850 (.rc) 同一張 PO (f06_po_number) 同時只保留一份有效的: 第一次收到新增, 再收到就原地更新 header / 明細 (數量、狀態等),
+// 明細以檔案內容為準 (新品號新增、檔案沒有的舊行刪除)。CANCEL 只改狀態、PO 保留 (不刪除);
+// 已 CANCEL 的 PO 再收到 ACTIVE 時, 新增一筆 PO, 舊的 CANCEL 筆保留。832 (.im) 仍是 append-only。
 // 連線設定讀取專案根目錄的 .env (PGHOST / PGPORT / PGDATABASE / PGUSER / PGPASSWORD)
 
 import { existsSync, readFileSync } from 'fs';
@@ -146,20 +147,39 @@ async function updateRow(client, table, id, cols, values, extraSql = '') {
   await client.query(`UPDATE ${table} SET ${sets}${extraSql} WHERE id = $${cols.length + 1}`, [...values, id]);
 }
 
-// 套用一張 PO: 沒有就新增 header / detail / carton; 已經有 (同 f06_po_number) 就原地更新, 同一張 PO 永遠只有一份。
+export const isCancelled = (status) => ['CANCEL', 'CANCELLED'].includes((status ?? '').trim().toUpperCase());
+
+// 決定收到的 PO 要更新哪一筆 header (回傳 id), 回傳 null 代表要新增。existing: [{id, status}] (依 id 排序)
+// - 有「未取消」的一筆 -> 更新它 (包含被改成 CANCEL)
+// - 只剩已取消的: 檔案也是取消 -> 更新最新一筆已取消的; 檔案不是取消 (例如 CANCEL 之後重新 ACTIVE) -> 新增, 已取消的保留當歷史
+export function pickTargetHeader(existing, incomingStatus) {
+  const active = existing.filter((r) => !isCancelled(r.status));
+  if (active.length > 0) return active[active.length - 1].id;
+  if (existing.length > 0 && isCancelled(incomingStatus)) return existing[existing.length - 1].id;
+  return null;
+}
+
+// 套用一張 PO: 沒有就新增 header / detail / carton; 已經有 (同 f06_po_number) 就原地更新, 同一張 PO 同時只有一份有效的。
+// CANCEL 只改狀態、PO 保留; 已取消的 PO 再收到非取消狀態時新增一筆 (見 pickTargetHeader)。
 // 箱明細 (RCPCTNDR) 只有檔案帶了才整批取代; 檔案沒帶箱明細 (例如只有兩層的 DPO) 時保留原本的, 不當成「全部刪除」
 async function applyPo(client, group, sourceFile, fieldCols, poNumberIdx) {
   const poNumber = toNull(group.header[poNumberIdx]);
   if (!poNumber) throw new Error('RCPHDR 沒有 PO 號 (f06_po_number), 無法判斷是新增還是更新');
   const headerValues = group.header.map(toNull);
+  const statusIdx = fieldCols.RCPHDR.indexOf('f13_order_status');
 
-  const found = await client.query(`SELECT id FROM ${RC_TABLES.RCPHDR} WHERE f06_po_number = $1 FOR UPDATE`, [poNumber]);
-  const isNew = found.rows.length === 0;
+  const found = await client.query(
+    `SELECT id, f13_order_status AS status FROM ${RC_TABLES.RCPHDR} WHERE f06_po_number = $1 ORDER BY id FOR UPDATE`,
+    [poNumber]
+  );
+  const targetId = pickTargetHeader(found.rows, headerValues[statusIdx]);
+  const isNew = targetId === null;
+  const reactivated = isNew && found.rows.length > 0;
   let headerId;
   if (isNew) {
     headerId = await insert(client, RC_TABLES.RCPHDR, ['source_file', ...fieldCols.RCPHDR], [sourceFile, ...headerValues]);
   } else {
-    headerId = found.rows[0].id;
+    headerId = targetId;
     await updateRow(client, RC_TABLES.RCPHDR, headerId, ['source_file', ...fieldCols.RCPHDR], [sourceFile, ...headerValues], ', updated_at = now()');
   }
 
@@ -198,7 +218,7 @@ async function applyPo(client, group, sourceFile, fieldCols, poNumberIdx) {
 
   return {
     poNumber,
-    action: isNew ? '新增' : '更新',
+    action: reactivated ? '新增 (取消後重新啟用, 舊筆保留)' : isNew ? '新增' : '更新',
     lines: { inserted: plan.inserts.length, updated: plan.updates.length, deleted: plan.deleteIds.length },
     detailItems: incoming.filter((l) => l.key).map((l) => ({ itemNumber: l.fields[itemIdx], lastDigit: l.fields[digitIdx] })),
   };
@@ -291,12 +311,12 @@ async function findMissingItemMasters(client, detailItems) {
 
 async function alertBlockedPo(sourceFile, { poNumber, missing }) {
   const body = [
-    `匯入檔案: ${sourceFile}`,
-    `PO 號: ${poNumber ?? '(未知)'}`,
-    '以下品號尚未收到對應的 832 Item Master, 系統已擋下這筆 DPO (未寫入 header / detail / carton):',
+    `Imported file: ${sourceFile}`,
+    `PO number: ${poNumber ?? '(unknown)'}`,
+    'The following item numbers have no matching 832 Item Master record. The DPO was blocked and nothing was written to header / detail / carton:',
     ...missing.map((item) => `- ${item}`),
   ].join('\n');
-  await sendAlertEmail({ subject: `[GAP測試環境] 850 擋下未知品號 - PO ${poNumber ?? ''} (${sourceFile})`, body });
+  await sendAlertEmail({ subject: `[GAP Test Environment] 850 blocked: unknown item number - PO ${poNumber ?? ''} (${sourceFile})`, body });
   console.log(`  -> 已寄出警示信: ${missing.length} 個品號未在 Item Master 中找到`);
 }
 

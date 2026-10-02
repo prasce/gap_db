@@ -2,7 +2,7 @@
 // 執行: node --test scripts/*.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { detailKey, detectImStatus, detectType, groupRcRecords, planDetailSync, snake, toNull } from './import.mjs';
+import { detailKey, detectImStatus, detectType, groupRcRecords, isCancelled, pickTargetHeader, planDetailSync, snake, toNull } from './import.mjs';
 
 test('toNull 把空字串轉成 null, 其餘原樣保留', () => {
   assert.equal(toNull(''), null);
@@ -100,4 +100,28 @@ test('groupRcRecords: 依 RCPHDR 分組, 明細與箱明細掛在最近一個表
 
 test('groupRcRecords: RCPHDR 之前出現明細時丟出錯誤並指出行號', () => {
   assert.throws(() => groupRcRecords([DET, HDR]), /第 1 行 RCPDETL 之前沒有 RCPHDR/);
+});
+
+test('pickTargetHeader: 有效的 PO 原地更新, 包含被改成 CANCEL (只改狀態, 不新增不刪除)', () => {
+  assert.equal(pickTargetHeader([{ id: 1, status: 'ACTIVE' }], 'CANCEL'), 1);
+  assert.equal(pickTargetHeader([{ id: 1, status: 'ACTIVE' }], 'ACTIVE'), 1);
+});
+
+test('pickTargetHeader: 只剩已取消的 PO 再收到 ACTIVE -> 新增 (null), 舊筆保留', () => {
+  assert.equal(pickTargetHeader([{ id: 1, status: 'CANCEL' }], 'ACTIVE'), null);
+});
+
+test('pickTargetHeader: 已取消的 PO 再收到 CANCEL 不重複新增, 更新最新一筆已取消的', () => {
+  assert.equal(pickTargetHeader([{ id: 1, status: 'CANCEL' }, { id: 2, status: 'CANCELLED' }], 'CANCEL'), 2);
+});
+
+test('pickTargetHeader: 取消歷史 + 一筆有效 -> 更新有效那筆; 沒有任何舊筆 -> 新增', () => {
+  assert.equal(pickTargetHeader([{ id: 1, status: 'CANCEL' }, { id: 2, status: 'ACTIVE' }], 'ACTIVE'), 2);
+  assert.equal(pickTargetHeader([], 'ACTIVE'), null);
+});
+
+test('isCancelled: 認 CANCEL / CANCELLED, 忽略大小寫與空白, null 視為未取消', () => {
+  assert.equal(isCancelled(' cancelled '), true);
+  assert.equal(isCancelled('ACTIVE'), false);
+  assert.equal(isCancelled(null), false);
 });

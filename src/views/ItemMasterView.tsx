@@ -2,12 +2,12 @@
 import { useAuth } from '../auth/AuthContext';
 import { QueryTable } from '../components/QueryTable';
 
-// 與 src-tauri/src/db.rs 的 ITEM_832_COLUMNS 相同順序
+// 與 src-tauri/src/db.rs 的 ITEM_832_COLUMNS 相同順序, 最後多一欄 created_at (query_832_items 另外附加)
 const COLUMNS = [
 	'customer_code', 'sku', 'item_desc', 'barcode', 'length', 'width', 'height', 'weight',
 	'units_per_carton', 'units_per_pallet', 'bundle_items', 'product_remarks', 'long_description',
 	'item_size', 'item_colour', 'item_style', 'division', 'department', 'list_price', 'country_of_origin',
-	'udf1', 'udf2', 'udf3', 'udf4', 'udf5', 'udf6', 'status'
+	'udf1', 'udf2', 'udf3', 'udf4', 'udf5', 'udf6', 'status', 'created_at'
 ] as const;
 
 // 與 db.rs 的 ItemFilter 欄位相同

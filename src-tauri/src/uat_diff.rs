@@ -102,7 +102,7 @@ pub fn receiving_tasks(kind: &str, po: &str, status: &str, cur: &[Line], prev: O
     "UPDATE_QTY" => diff.qty_changed.iter().map(|(i, o, n)| format!("{po}: {i} {} → {}", qty(*o), qty(*n))).collect(),
     "UPDATE_DELETE_LINE" => diff.removed.iter().map(|i| format!("{po}: -{i}")).collect(),
     "CANCEL" => vec![format!("{po}: {prev_status} → {status}")],
-    "REP_ACTIVE" => vec![format!("{po}: {prev_status} → {status} (同一張 PO 原地更新)")],
+    "REP_ACTIVE" => vec![format!("{po}: {prev_status} 保留, 新增一筆 {status}")],
     "ITEM_NOT_FOUND" => {
       let items: Vec<&str> = cur.iter().map(|(i, _)| i.as_str()).collect();
       vec![format!("{po}: {} (已擋下, 未寫入; 已寄警示信)", items.join(", "))]
@@ -206,7 +206,7 @@ mod tests {
     assert_eq!(receiving_tasks("CANCEL", "TEST0001", "CANCEL", &one, Some(("ACTIVE", &one)))[0].task, "TEST0001: ACTIVE → CANCEL");
     assert_eq!(
       receiving_tasks("REP_ACTIVE", "TEST0001", "ACTIVE", &one, Some(("CANCEL", &one)))[0].task,
-      "TEST0001: CANCEL → ACTIVE (同一張 PO 原地更新)"
+      "TEST0001: CANCEL 保留, 新增一筆 ACTIVE"
     );
     assert_eq!(
       receiving_tasks("ITEM_NOT_FOUND", "TEST0002", "ACTIVE", &[line("TEST84338", 114.0), line("TEST91352", 114.0)], None)[0].task,

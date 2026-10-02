@@ -193,7 +193,9 @@ pub async fn query_832_items(
   page_size: i64,
   account: Option<String>,
 ) -> Result<Page, String> {
-  let columns: Vec<(&str, &'static str)> = ITEM_832_COLUMNS.iter().map(|&c| (c, c)).collect();
+  let mut columns: Vec<(&str, &'static str)> = ITEM_832_COLUMNS.iter().map(|&c| (c, c)).collect();
+  // status 右邊多一欄 created_at (這筆事件寫入的時間), 以台北時間顯示; 與 ItemMasterView.tsx 的 COLUMNS 最後一欄對應
+  columns.push(("to_char(created_at AT TIME ZONE 'Asia/Taipei', 'YYYY-MM-DD HH24:MI:SS')", "created_at"));
   // show_deleted=false (一般使用者): 每個 SKU 只取最新一筆, 且該筆 status 不是 DELETE 才顯示
   // show_deleted=true (管理員勾選「顯示已刪除」): 顯示全部歷史列, 不做任何篩選
   // 前端只是用 role 決定要不要「顯示」這個勾選框, 送出的 include_deleted 本身不可信任, 一定要在後端重新確認
