@@ -306,7 +306,7 @@ CREATE TABLE IF NOT EXISTS uat_runs (
 ## uat_runs 新增 type / uat_task (測試目的)
 
 - `uat_runs` 新增 `type TEXT[]`、`uat_task TEXT[]` 兩個平行陣列 (同索引成對), `gap_db.sql` 已含 `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`, 本機資料庫已套用; 既有 run 不回填 (NULL)。
-- 832: ADD 記 `SKU`; UPDATE 每個變更欄位一筆 `欄位: 舊值 → 新值` (以 customer_code + sku + long_description 第 1 碼比對本檔之前最新一筆); DELETE 記 `Delete`。
+- 832: ADD 記本檔新增的 SKU (去重, 逗號分隔, 例 `3210TEST,3240TEST`); UPDATE 每個變更欄位一筆 `欄位: 舊值 → 新值` (以 customer_code + sku + long_description 第 1 碼比對本檔之前最新一筆); DELETE 記本檔刪除的 SKU (同 ADD 格式)。
 - 850 (SET 01~07): `ACTIVE` / `UPDATE_ADD_LINE` / `UPDATE_QTY` / `UPDATE_DELETE_LINE` / `CANCEL` / `REP_ACTIVE` / `ITEM_NOT_FOUND`, uat_task 為 `PO 號: 變更說明`。
 - `uat_runs_recode` 以 LATERAL unnest 展開, 同一個 run_id 的多筆測試目的各佔一列; 「共 N 筆」以展開後的列計, 側欄計數仍為執行次數。
 - **2026-10-01 後續: 850 同一張 PO 只保留一份、原地更新** (取代先前 append-only): `import.mjs` 對 `.rc` 以 PO 號 upsert, 明細依完整品號同步 (更新數量 / 新增 / 刪除), 不留歷史; `gapwmc_850_header` 新增 `updated_at` 與唯一索引 `ux_gapwmc_850_header_po`; CANCEL / REP_ACTIVE 也是原地改狀態。850 UAT 改為匯入前檢查 PO 停在前一個情境的狀態, 重測前須先 `DELETE FROM gapwmc_850_header WHERE f06_po_number IN ('TEST0001','TEST0002');`。

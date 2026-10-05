@@ -122,8 +122,9 @@ async fn im_file_tasks(source_file: &str) -> Result<Vec<UatTask>, String> {
     .collect();
   let Some(first) = new_rows.first() else { return Ok(Vec::new()) };
   let event = first.get("status").and_then(Value::as_str).unwrap_or("UPDATE").to_string();
+  let skus: Vec<String> = new_rows.iter().filter_map(|r| r.get("sku").and_then(Value::as_str).map(str::to_string)).collect();
   if event != "UPDATE" {
-    return Ok(uat_diff::im_tasks(&event, None));
+    return Ok(uat_diff::im_tasks(&event, &skus, None));
   }
 
   let text = |row: &Map<String, Value>, key: &str| row.get(key).and_then(Value::as_str).map(str::to_string);
@@ -146,7 +147,7 @@ async fn im_file_tasks(source_file: &str) -> Result<Vec<UatTask>, String> {
       changes.extend(uat_diff::diff_columns(&old, row));
     }
   }
-  Ok(uat_diff::im_tasks(&event, any_old.then_some(changes.as_slice())))
+  Ok(uat_diff::im_tasks(&event, &skus, any_old.then_some(changes.as_slice())))
 }
 
 async fn run_item_master_uat(app: &AppHandle, account: Option<&str>) -> Result<(Vec<UatItem>, Vec<UatTask>), String> {

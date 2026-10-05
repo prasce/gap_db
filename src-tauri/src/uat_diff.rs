@@ -44,12 +44,22 @@ pub fn diff_columns(old: &Map<String, Value>, new: &Map<String, Value>) -> Vec<C
     .collect()
 }
 
-// 832 一個檔案的測試目的: ADD 固定記 SKU (不列各 SKU), DELETE 記 Delete, UPDATE 每個變更欄位一筆。
-// changes 為 None 代表找不到舊資料可比對; 相同的變更 (多個 SKU 改同一欄同樣的值) 只記一筆
-pub fn im_tasks(event: &str, changes: Option<&[ColumnChange]>) -> Vec<UatTask> {
+// 去重並保留出現順序, 以逗號串起; 沒有 SKU 時回傳 "(無 SKU)"
+fn sku_list(skus: &[String]) -> String {
+  let mut seen: Vec<&str> = Vec::new();
+  for sku in skus {
+    if !sku.is_empty() && !seen.contains(&sku.as_str()) {
+      seen.push(sku);
+    }
+  }
+  if seen.is_empty() { "(無 SKU)".to_string() } else { seen.join(",") }
+}
+
+// 832 一個檔案的測試目的: ADD / DELETE 記本檔新增或刪除的 SKU (去重, 逗號分隔, 例 "3210TEST,3240TEST"), UPDATE 每個變更欄位一筆。
+// skus 為本檔各列的 sku; changes 為 None 代表找不到舊資料可比對; 相同的變更 (多個 SKU 改同一欄同樣的值) 只記一筆
+pub fn im_tasks(event: &str, skus: &[String], changes: Option<&[ColumnChange]>) -> Vec<UatTask> {
   match event {
-    "ADD" => vec![UatTask::new("ADD", "SKU")],
-    "DELETE" => vec![UatTask::new("DELETE", "Delete")],
+    "ADD" | "DELETE" => vec![UatTask::new(event, sku_list(skus))],
     _ => match changes {
       None => vec![UatTask::new(event, "(找不到舊資料可比對)")],
       Some([]) => vec![UatTask::new(event, "(無欄位變更)")],
@@ -153,24 +163,26 @@ mod tests {
   }
 
   #[test]
-  fn im_tasks_add_and_delete_use_fixed_text() {
-    assert_eq!(im_tasks("ADD", None), vec![UatTask::new("ADD", "SKU")]);
-    assert_eq!(im_tasks("DELETE", None), vec![UatTask::new("DELETE", "Delete")]);
+  fn im_tasks_add_and_delete_list_distinct_skus() {
+    let skus = ["3210TEST".to_string(), "3240TEST".to_string(), "3210TEST".to_string()];
+    assert_eq!(im_tasks("ADD", &skus, None), vec![UatTask::new("ADD", "3210TEST,3240TEST")]);
+    assert_eq!(im_tasks("DELETE", &skus[..1], None), vec![UatTask::new("DELETE", "3210TEST")]);
+    assert_eq!(im_tasks("ADD", &[], None)[0].task, "(無 SKU)");
   }
 
   #[test]
   fn im_tasks_update_makes_one_task_per_change_and_dedups() {
     let c = ColumnChange { column: "long_description".into(), old: "1-FLAT-0-003".into(), new: "12-FLAT-0-001".into() };
 
-    let tasks = im_tasks("UPDATE", Some(&[c.clone(), c]));
+    let tasks = im_tasks("UPDATE", &[], Some(&[c.clone(), c]));
 
     assert_eq!(tasks, vec![UatTask::new("UPDATE", "long_description: 1-FLAT-0-003 → 12-FLAT-0-001")]);
   }
 
   #[test]
   fn im_tasks_update_without_old_row_or_changes_is_explained() {
-    assert_eq!(im_tasks("UPDATE", None)[0].task, "(找不到舊資料可比對)");
-    assert_eq!(im_tasks("UPDATE", Some(&[]))[0].task, "(無欄位變更)");
+    assert_eq!(im_tasks("UPDATE", &[], None)[0].task, "(找不到舊資料可比對)");
+    assert_eq!(im_tasks("UPDATE", &[], Some(&[]))[0].task, "(無欄位變更)");
   }
 
   #[test]

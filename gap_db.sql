@@ -1076,6 +1076,6 @@ COMMENT ON COLUMN uat_runs.triggered_by IS '觸發帳號, 對應 employees.accou
 COMMENT ON COLUMN uat_runs.overall_status IS '整體結果: pass / fail';
 COMMENT ON COLUMN uat_runs.results IS '逐項測試結果 JSON 陣列: [{name, status, detail}, ...], status 為 pass/fail/skip';
 COMMENT ON COLUMN uat_runs.type IS '測試目的類型 (與 uat_task 同索引成對的平行陣列); 832: ADD / UPDATE / DELETE; 850: ACTIVE / UPDATE_ADD_LINE / UPDATE_QTY / UPDATE_DELETE_LINE / CANCEL / REP_ACTIVE / ITEM_NOT_FOUND';
-COMMENT ON COLUMN uat_runs.uat_task IS '測試內容 (與 type 同索引成對); 832 ADD 固定記 SKU, UPDATE 記 "欄位名: 舊值 → 新值" (每個變更欄位一筆), DELETE 記 Delete; 850 記 "PO 號: 變更說明"';
+COMMENT ON COLUMN uat_runs.uat_task IS '測試內容 (與 type 同索引成對); 832 ADD / DELETE 記本檔新增或刪除的 SKU (去重, 逗號分隔, 例 3210TEST,3240TEST), UPDATE 記 "欄位名: 舊值 → 新值" (每個變更欄位一筆); 850 記 "PO 號: 變更說明"';
 
 COMMIT;
