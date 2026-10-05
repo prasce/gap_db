@@ -108,7 +108,7 @@ fn archive_note(file: &Path) -> String {
 }
 
 // 832 一個檔案匯入後的測試目的: 取本檔新列的事件類型 (importer 依檔名寫入 status), UPDATE 時逐列去找同 SKU 的上一筆舊資料比對。
-// 舊資料以 customer_code + sku + long_description 第 1 碼配對 (不含 item_size/item_colour, 所以 item_colour 被改也看得出來),
+// 舊資料以 customer_code + sku (完整 9 碼) 配對 (不含 item_size/item_colour, 所以 item_colour 被改也看得出來),
 // 只取本檔之前匯入的列 (id 較小), 同 SKU 有多筆時優先選 item_size 相同的
 async fn im_file_tasks(source_file: &str) -> Result<Vec<UatTask>, String> {
   let client = db::connect().await?;
@@ -135,10 +135,9 @@ async fn im_file_tasks(source_file: &str) -> Result<Vec<UatTask>, String> {
       .query_opt(
         "SELECT to_jsonb(p) FROM gapwmc_832_item p \
          WHERE p.customer_code = $1 AND p.sku = $2 \
-           AND left(p.long_description, 1) IS NOT DISTINCT FROM left($3::text, 1) \
-           AND p.id < (SELECT min(id) FROM gapwmc_832_item WHERE source_file = $4) \
-         ORDER BY (p.item_size IS NOT DISTINCT FROM $5::text) DESC, p.id DESC LIMIT 1",
-        &[&text(row, "customer_code"), &text(row, "sku"), &text(row, "long_description"), &source_file, &text(row, "item_size")],
+           AND p.id < (SELECT min(id) FROM gapwmc_832_item WHERE source_file = $3) \
+         ORDER BY (p.item_size IS NOT DISTINCT FROM $4::text) DESC, p.id DESC LIMIT 1",
+        &[&text(row, "customer_code"), &text(row, "sku"), &source_file, &text(row, "item_size")],
       )
       .await
       .map_err(|e| format!("查詢舊資料失敗: {e}"))?;
@@ -430,7 +429,7 @@ async fn item_master_exists(full_item: &str) -> Result<bool, String> {
   let client = db::connect().await?;
   client
     .query_one(
-      "SELECT EXISTS (SELECT 1 FROM gapwmc_832_item WHERE sku || left(long_description, 1) = $1)",
+      "SELECT EXISTS (SELECT 1 FROM gapwmc_832_item WHERE sku = $1)",
       &[&full_item],
     )
     .await

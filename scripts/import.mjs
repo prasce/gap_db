@@ -99,7 +99,8 @@ async function importIm(client, lines, sourceFile) {
   return { counts: { [IM_TABLE]: rows.length }, type: 'im', poNumber: null, detailItems: [] };
 }
 
-// 明細行配對鍵: 完整品號 (f05_item_number + f26_item_last_digit), 與 832 的 sku || left(long_description, 1) 對應
+// 明細行配對鍵: 完整品號 (f05_item_number + f26_item_last_digit), 與 832 的 sku 對應。
+// 新格式 f05 已是 9 碼、f26 為空; 舊格式 (f05 8 碼 + f26 最後一碼) 接起來也相容
 export const detailKey = (itemNumber, lastDigit) => (itemNumber ?? '') + (lastDigit ?? '');
 
 // 把 .rc 的記錄 (已用 | 切成欄位陣列) 依 RCPHDR 分組: 明細 / 箱明細掛在最近一個表頭底下。
@@ -303,7 +304,7 @@ async function findMissingItemMasters(client, detailItems) {
   for (const { itemNumber, lastDigit } of detailItems) {
     const fullItem = itemNumber + (lastDigit ?? '');
     const { rows } = await client.query(
-      `SELECT 1 FROM gapwmc_832_item WHERE sku || left(long_description, 1) = $1 LIMIT 1`,
+      `SELECT 1 FROM gapwmc_832_item WHERE sku = $1 LIMIT 1`,
       [fullItem]
     );
     if (rows.length === 0) missing.push(fullItem);

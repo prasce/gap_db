@@ -139,11 +139,11 @@ pub struct ItemFilter {
   pub(crate) include_deleted: Option<String>,
 }
 
-// 832 SKU 唯一識別鍵 (2026-09-30 定案, 見 task.md Phase 1-A-1): customer_code + 完整 9 碼品號 (sku 8 碼 +
-// long_description 第 1 碼) + item_size (實際內容為顏色) + item_colour (實際內容為尺寸)。
+// 832 SKU 唯一識別鍵 (2026-09-30 定案, 見 task.md Phase 1-A-1): customer_code + 完整 9 碼品號 (sku; 2026-10 起 GAP
+// 直接給 9 碼, 不再拆 8 碼 + long_description 第 1 碼) + item_size (實際內容為顏色) + item_colour (實際內容為尺寸)。
 // gapwmc_832_item 為 append-only (每次匯入一律新增列, 不覆寫不刪除, 見 注意事項.md), 所以這組鍵不是資料庫層級的唯一鍵,
 // 只用來在查詢端分組取「這個 SKU 目前最新一筆 status」。
-pub(crate) const SKU_IDENTITY_KEY: &str = "customer_code, sku, left(long_description, 1), item_size, item_colour";
+pub(crate) const SKU_IDENTITY_KEY: &str = "customer_code, sku, item_size, item_colour";
 
 // 確認 account 是否為 role='admin' 的員工; account 為 None 或查無此人一律視為非管理員
 pub(crate) async fn is_admin(client: &Client, account: Option<&str>) -> Result<bool, String> {

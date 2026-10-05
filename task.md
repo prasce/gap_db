@@ -31,12 +31,12 @@ Phase 1 中針對 832 與 850 所設計的相關邏輯。
 
 ### Phase 1-A：資料模型準備
 
-1. **832 SKU 唯一識別鍵（已定案，2026-09-30）**：`customer_code` + 完整 9 碼品號（`sku` 8 碼 + `long_description` 第 1 碼）+ `item_size`（實際內容為顏色）+ `item_colour`（實際內容為尺寸）。四者組合視為同一 SKU/Size 變體，用於分組取「最新一筆 status」；因設計為 append-only，此組合鍵**不是**資料庫唯一鍵/UNIQUE constraint，只用於查詢端 `GROUP BY` / `DISTINCT ON` 判斷最新狀態。SQL 範例：
+1. **832 SKU 唯一識別鍵（已定案，2026-09-30）**：`customer_code` + 完整 9 碼品號（`sku`；2026-10-05 起 GAP 直接給 9 碼，原本的「8 碼 + `long_description` 第 1 碼」已廢止）+ `item_size`（實際內容為顏色）+ `item_colour`（實際內容為尺寸）。四者組合視為同一 SKU/Size 變體，用於分組取「最新一筆 status」；因設計為 append-only，此組合鍵**不是**資料庫唯一鍵/UNIQUE constraint，只用於查詢端 `GROUP BY` / `DISTINCT ON` 判斷最新狀態。SQL 範例：
    ```sql
-   SELECT DISTINCT ON (customer_code, sku, left(long_description,1), item_size, item_colour)
-          customer_code, sku, left(long_description,1) AS last_digit, item_size, item_colour, status, created_at
+   SELECT DISTINCT ON (customer_code, sku, item_size, item_colour)
+          customer_code, sku, item_size, item_colour, status, created_at
    FROM gapwmc_832_item
-   ORDER BY customer_code, sku, left(long_description,1), item_size, item_colour, created_at DESC;
+   ORDER BY customer_code, sku, item_size, item_colour, created_at DESC;
    ```
 2. **新增 `employees` 表**：帳號、密碼（雜湊儲存，不可明碼）、角色（至少 `admin` / `user`）。改寫 `LoginPage.tsx` 串接資料庫驗證，移除寫死帳密。範圍先求最小可用（登入 + 角色判斷），不做完整權限系統。
 3. **850 同一 PO 的狀態追蹤欄位/視圖**：比照 832 的 append-only 設計，不改動匯入行為，而是新增一個依 `f06_po_number` 分組、以 `created_at`／`f45_in_dc_date` 排序取「最新一筆 header」及「最新一筆 detail（依 item_number+last_digit 分組）」的查詢或 view，作為「目前 PO 狀態」的判斷依據。
@@ -100,7 +100,7 @@ Phase 1 中針對 832 與 850 所設計的相關邏輯。
 - `gap_db.sql` 新增 `employees` 表（`CREATE EXTENSION pgcrypto` + bcrypt 雜湊 + 預設帳號 `admin` / `admin123`，已套用到本機資料庫並驗證登入查詢）。
 - `src-tauri/src/db.rs` 新增 `login` 指令（`LoginRequest`/`Employee`，用 `crypt()` 比對，不落地存密碼明碼），已在 `lib.rs` 註冊。
 - `src/auth/AuthContext.tsx`（新檔）：`AuthProvider`/`useAuth`，登入結果存 `sessionStorage`；已掛進 `src/Providers.tsx`。
-- 832 SKU 唯一識別鍵已在 SQL 端驗證：`DISTINCT ON (customer_code, sku, left(long_description,1), item_size, item_colour) ... ORDER BY ..., created_at DESC`。
+- 832 SKU 唯一識別鍵已在 SQL 端驗證：`DISTINCT ON (customer_code, sku, item_size, item_colour) ... ORDER BY ..., created_at DESC`。
 
 ### ✅ Phase 1-B 已完成（832 001/002/003）
 

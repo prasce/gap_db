@@ -82,6 +82,9 @@ test('planDetailSync: 沒有舊行時全部新增, 沒有新行時全部刪除',
 test('detailKey: 完整品號 = f05 + f26, f26 為空時只用 f05', () => {
   assert.equal(detailKey('32408433', '8'), '324084338');
   assert.equal(detailKey('32408433', null), '32408433');
+  // 2026-10 新格式: f05 已是 9 碼, f26 為空
+  assert.equal(detailKey('324084338', null), '324084338');
+  assert.equal(detailKey('324084338', ''), '324084338');
 });
 
 const HDR = ['RCPHDR', 'P1'];
