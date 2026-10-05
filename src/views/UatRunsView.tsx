@@ -22,5 +22,5 @@ const SELECT_FILTERS = {
 };
 
 export default function UatRunsView() {
-	return <QueryTable command='query_uat_runs' columns={COLUMNS} filters={FILTERS} selectFilters={SELECT_FILTERS} />;
+	return <QueryTable command='query_uat_runs' columns={COLUMNS} filters={FILTERS} selectFilters={SELECT_FILTERS} exportName='uat_runs' />;
 }

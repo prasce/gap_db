@@ -4,6 +4,9 @@ import { Alert, Badge, Button, Checkbox, Group, Loader, Modal, Pagination, Selec
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { notifications } from '@mantine/notifications';
 import { useEffect, useRef, useState } from 'react';
+import { save } from '@tauri-apps/plugin-dialog';
+import { writeFile } from '@tauri-apps/plugin-fs';
+import writeExcelFile from 'write-excel-file/universal';
 import { useAuth } from '../auth/AuthContext';
 
 type Row = { id: number } & Record<string, string | null>;
@@ -33,9 +36,14 @@ interface QueryTableProps {
 	checkboxFilters?: Record<string, { label: string }>
 	// 顯示「UAT 測試」按鈕並指定送給 run_uat_test 指令的頁面代碼; 不傳則不顯示按鈕
 	uatPage?: 'item_master' | 'receiving'
+	// 顯示「匯出資料」按鈕, 值為預設檔名 (不含副檔名); 匯出目前查詢條件下的全部資料 (不受分頁限制) 為 .xlsx; 不傳則不顯示按鈕
+	exportName?: string
 }
 
-export function QueryTable({ command, columns, filters, selectFilters, checkboxFilters, uatPage }: QueryTableProps) {
+// 匯出時逐頁取回的每頁筆數, 對齊後端 MAX_PAGE_SIZE
+const EXPORT_PAGE_SIZE = 100;
+
+export function QueryTable({ command, columns, filters, selectFilters, checkboxFilters, uatPage, exportName }: QueryTableProps) {
 	const { employee } = useAuth();
 	const [filter, setFilter] = useState<Record<string, string>>(() => Object.fromEntries(filters.map(f => [f, ''])));
 	const [items, setItems] = useState<Row[]>([]);
@@ -47,6 +55,7 @@ export function QueryTable({ command, columns, filters, selectFilters, checkboxF
 	const [error, setError] = useState<string>();
 	const [uatRunning, setUatRunning] = useState(false);
 	const [uatResult, setUatResult] = useState<UatResult>();
+	const [exporting, setExporting] = useState(false);
 	// 只採用最後一次查詢的結果, 避免較慢回來的舊結果蓋掉新結果
 	const latestSearch = useRef(0);
 
@@ -60,6 +69,39 @@ export function QueryTable({ command, columns, filters, selectFilters, checkboxF
 			notifications.show({ title: 'UAT 測試執行失敗', message: String(e), color: 'red' });
 		} finally {
 			setUatRunning(false);
+		}
+	}
+
+	// 以目前查詢條件逐頁取回全部資料, 寫成 .xlsx; 檔名與位置由使用者在儲存對話框選擇
+	async function exportData() {
+		if (!exportName) return;
+		setExporting(true);
+		try {
+			const params = Object.fromEntries(filters.map(f => [f, filter[f]?.trim() || null]));
+			const rows: Row[] = [];
+			for (let pageNo = 1; ; pageNo++) {
+				const page = await invoke<Page>(command, { filter: params, page: pageNo, pageSize: EXPORT_PAGE_SIZE, account: employee?.account ?? null });
+				rows.push(...page.items);
+				if (rows.length >= page.total || page.items.length === 0) break;
+			}
+			if (rows.length === 0) {
+				notifications.show({ message: '沒有可匯出的資料', color: 'yellow' });
+				return;
+			}
+			const stamp = new Date().toLocaleString('sv').replace(/[-: ]/g, '').replace(/^(\d{8})(\d{6})$/, '$1_$2');
+			const path = await save({ defaultPath: `${exportName}_${stamp}.xlsx`, filters: [{ name: 'Excel', extensions: ['xlsx'] }] });
+			if (!path) return;
+			const sheetData = [
+				columns.map(column => ({ value: column, fontWeight: 'bold' as const })),
+				...rows.map(row => columns.map(column => ({ value: row[column] ?? '', type: String }))),
+			];
+			const blob = await writeExcelFile(sheetData, { columns: columns.map(() => ({ width: 22 })) }).toBlob();
+			await writeFile(path, new Uint8Array(await blob.arrayBuffer()));
+			notifications.show({ title: '匯出完成', message: `共 ${rows.length} 筆: ${path}`, color: 'green' });
+		} catch (e) {
+			notifications.show({ title: '匯出失敗', message: String(e), color: 'red' });
+		} finally {
+			setExporting(false);
 		}
 	}
 
@@ -154,6 +196,8 @@ export function QueryTable({ command, columns, filters, selectFilters, checkboxF
 			    連續點擊的正確性已經靠 search() 裡的 latestSearch 只採用最後一次結果來保護 */}
 			<Button size='xs' w={80} color='gapBlue' onClick={applyFilter}>查詢</Button>
 			<Button size='xs' w={80} color='gapBlue' onClick={reset}>重置</Button>
+			{exportName &&
+				<Button size='xs' color='gapBlue' variant='outline' loading={exporting} onClick={exportData}>匯出資料</Button>}
 			{uatPage &&
 				<Button size='xs' color='red' ml='auto' loading={uatRunning} onClick={runUatTest}>UAT 測試</Button>}
 		</Group>
