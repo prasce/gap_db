@@ -35,5 +35,5 @@ export default function ItemMasterView() {
 	const filters = isAdmin ? ADMIN_FILTERS : BASE_FILTERS;
 
 	return <QueryTable command='query_832_items' columns={COLUMNS} filters={filters}
-		selectFilters={SELECT_FILTERS} checkboxFilters={isAdmin ? CHECKBOX_FILTERS : undefined} uatPage='item_master' />;
+		selectFilters={SELECT_FILTERS} checkboxFilters={isAdmin ? CHECKBOX_FILTERS : undefined} uatPage='item_master' exportName='item_master' />;
 }
