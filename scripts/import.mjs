@@ -312,14 +312,25 @@ async function findMissingItemMasters(client, detailItems) {
   return missing;
 }
 
-async function alertBlockedPo(sourceFile, { poNumber, missing }) {
+// 警示信格式依 GAP 提供的範本 (doc/alert email.md); 純函式, 方便測試
+export function buildBlockedPoEmail(sourceFile, { poNumber, missing }) {
+  const po = poNumber ?? '(unknown)';
   const body = [
-    `Imported file: ${sourceFile}`,
-    `PO number: ${poNumber ?? '(unknown)'}`,
-    'The following item numbers have no matching 832 Item Master record. The DPO was blocked and nothing was written to header / detail / carton:',
-    ...missing.map((item) => `- ${item}`),
+    `Imported File: ${sourceFile}`,
+    `PO Number: ${po}`,
+    '',
+    'The EDI 850 DPO was not received in WMS during processing as the following item master data could not be matched to any existing 832 Item Master records:',
+    '',
+    ...missing.map((item, i) => `${i + 1}. ${item}`),
+    '',
+    'As a result, the DPO was not created. Please review and ensure the corresponding EDI 832 Item Master Data are available before resubmitting the DPO.',
   ].join('\n');
-  await sendAlertEmail({ subject: `[GAP Test Environment] 850 blocked: unknown item number - PO ${poNumber ?? ''} (${sourceFile})`, body });
+  return { subject: `[Missing Item Master Data] DPO ${po} Unable to Receive in WMS`, body };
+}
+
+async function alertBlockedPo(sourceFile, blocked) {
+  const { missing } = blocked;
+  await sendAlertEmail(buildBlockedPoEmail(sourceFile, blocked));
   console.log(`  -> 已寄出警示信: ${missing.length} 個品號未在 Item Master 中找到`);
 }
 

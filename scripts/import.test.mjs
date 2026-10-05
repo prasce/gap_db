@@ -2,7 +2,7 @@
 // 執行: node --test scripts/*.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { detailKey, detectImStatus, detectType, groupRcRecords, isCancelled, pickTargetHeader, planDetailSync, snake, toNull } from './import.mjs';
+import { buildBlockedPoEmail, detailKey, detectImStatus, detectType, groupRcRecords, isCancelled, pickTargetHeader, planDetailSync, snake, toNull } from './import.mjs';
 
 test('toNull 把空字串轉成 null, 其餘原樣保留', () => {
   assert.equal(toNull(''), null);
@@ -127,4 +127,29 @@ test('isCancelled: 認 CANCEL / CANCELLED, 忽略大小寫與空白, null 視為
   assert.equal(isCancelled(' cancelled '), true);
   assert.equal(isCancelled('ACTIVE'), false);
   assert.equal(isCancelled(null), false);
+});
+
+test('buildBlockedPoEmail: 主旨與內文符合 GAP 範本 (doc/alert email.md)', () => {
+  const { subject, body } = buildBlockedPoEmail('850_PO_62028556_Active.rc', { poNumber: '62028556', missing: ['323891228', '323891352'] });
+  assert.equal(subject, '[Missing Item Master Data] DPO 62028556 Unable to Receive in WMS');
+  assert.equal(
+    body,
+    [
+      'Imported File: 850_PO_62028556_Active.rc',
+      'PO Number: 62028556',
+      '',
+      'The EDI 850 DPO was not received in WMS during processing as the following item master data could not be matched to any existing 832 Item Master records:',
+      '',
+      '1. 323891228',
+      '2. 323891352',
+      '',
+      'As a result, the DPO was not created. Please review and ensure the corresponding EDI 832 Item Master Data are available before resubmitting the DPO.',
+    ].join('\n')
+  );
+});
+
+test('buildBlockedPoEmail: 沒有 PO 號時主旨與內文都顯示 (unknown)', () => {
+  const { subject, body } = buildBlockedPoEmail('x.rc', { poNumber: null, missing: ['1'] });
+  assert.match(subject, /DPO \(unknown\) Unable/);
+  assert.match(body, /PO Number: \(unknown\)/);
 });
