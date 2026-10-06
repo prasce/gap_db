@@ -43,6 +43,11 @@ interface QueryTableProps {
 // 匯出時逐頁取回的每頁筆數, 對齊後端 MAX_PAGE_SIZE
 const EXPORT_PAGE_SIZE = 100;
 
+// 貼上的多行文字 (換行/Tab 分隔, 例如 Excel 一欄) 轉成 ; 分隔的一行, 略過空白行
+export function joinPastedLines(text: string): string {
+	return text.split(/[\r\n\t]+/).map(part => part.trim()).filter(Boolean).join(';');
+}
+
 export function QueryTable({ command, columns, filters, selectFilters, checkboxFilters, uatPage, exportName }: QueryTableProps) {
 	const { employee } = useAuth();
 	const [filter, setFilter] = useState<Record<string, string>>(() => Object.fromEntries(filters.map(f => [f, ''])));
@@ -186,6 +191,17 @@ export function QueryTable({ command, columns, filters, selectFilters, checkboxF
 						onChange={value => setFilter(prev => ({ ...prev, [field]: value ?? '' }))} />;
 				}
 				return <TextInput key={field} size='xs' w={160} placeholder={`請輸入:${field}`} value={filter[field] ?? ''}
+					onPaste={e => {
+						// 從 Excel 等貼上多行時, 單行輸入框會把換行吃掉讓值黏在一起, 先換成 ; 再插入游標位置 (查詢端支援 ; 分隔多個值)
+						const pasted = e.clipboardData.getData('text');
+						if (!/[\r\n\t]/.test(pasted)) return;
+						e.preventDefault();
+						const input = e.currentTarget;
+						const start = input.selectionStart ?? input.value.length;
+						const end = input.selectionEnd ?? start;
+						const value = input.value.slice(0, start) + joinPastedLines(pasted) + input.value.slice(end);
+						setFilter(prev => ({ ...prev, [field]: value }));
+					}}
 					onChange={e => {
 						const value = e.currentTarget.value;
 						setFilter(prev => ({ ...prev, [field]: value }));

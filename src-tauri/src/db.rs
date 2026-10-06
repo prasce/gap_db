@@ -113,6 +113,16 @@ fn ilike(n: usize, expr: &str) -> String {
   format!("(${n}::text IS NULL OR {expr} ILIKE '%' || ${n} || '%')")
 }
 
+// 與 ilike 相同的部分符合, 但輸入可以放多個值 (以 ; , 全形；， 或空白分隔, 例 "324011041;324011043"), 符合任何一個就算;
+// 只有分隔符號沒有實際內容時視同沒有條件。仍是單一文字參數 $n, 呼叫端不用改傳值方式
+fn ilike_any(n: usize, expr: &str) -> String {
+  const SEP: &str = r"[;,；，\s]+";
+  let terms = format!("SELECT t FROM unnest(regexp_split_to_array(${n}, '{SEP}')) t WHERE t <> ''");
+  format!(
+    "(${n}::text IS NULL OR NOT EXISTS ({terms}) OR {expr} ILIKE ANY (SELECT '%' || t || '%' FROM ({terms}) s(t)))"
+  )
+}
+
 async fn count(sql: &str) -> Result<i64, String> {
   let client = connect().await?;
   let row = client
@@ -131,7 +141,7 @@ async fn count(sql: &str) -> Result<i64, String> {
 pub struct ItemFilter {
   pub(crate) customer_code: Option<String>,
   pub(crate) sku: Option<String>,
-  pub(crate) barcode: Option<String>,
+  pub(crate) source_file: Option<String>,
   pub(crate) long_description: Option<String>,
   pub(crate) status: Option<String>,
   // "true" 時 (僅限管理員畫面會送出此值): 顯示每個 SKU 的完整歷史列 (含 status = DELETE);
@@ -194,8 +204,9 @@ pub async fn query_832_items(
   account: Option<String>,
 ) -> Result<Page, String> {
   let mut columns: Vec<(&str, &'static str)> = ITEM_832_COLUMNS.iter().map(|&c| (c, c)).collect();
-  // status 右邊多一欄 created_at (這筆事件寫入的時間), 以台北時間顯示; 與 ItemMasterView.tsx 的 COLUMNS 最後一欄對應
+  // status 右邊多 created_at (這筆事件寫入的時間, 台北時間) 與 source_file (匯入的檔名); 與 ItemMasterView.tsx 的 COLUMNS 最後兩欄對應
   columns.push(("to_char(created_at AT TIME ZONE 'Asia/Taipei', 'YYYY-MM-DD HH24:MI:SS')", "created_at"));
+  columns.push(("source_file", "source_file"));
   // show_deleted=false (一般使用者): 每個 SKU 只取最新一筆, 且該筆 status 不是 DELETE 才顯示
   // show_deleted=true (管理員勾選「顯示已刪除」): 顯示全部歷史列, 不做任何篩選
   // 前端只是用 role 決定要不要「顯示」這個勾選框, 送出的 include_deleted 本身不可信任, 一定要在後端重新確認
@@ -223,8 +234,8 @@ pub async fn query_832_items(
   let from_where = format!(
     "FROM {from_table} WHERE {} AND {} AND {} AND {} AND {} AND {hide_deleted_clause} ORDER BY id",
     ilike(1, "customer_code"),
-    ilike(2, "sku"),
-    ilike(3, "barcode"),
+    ilike_any(2, "sku"),
+    ilike(3, "source_file"),
     ilike(4, "long_description"),
     ilike(5, "status"),
   );
@@ -235,7 +246,7 @@ pub async fn query_832_items(
     &[
       &filter.customer_code,
       &filter.sku,
-      &filter.barcode,
+      &filter.source_file,
       &filter.long_description,
       &filter.status,
     ],
@@ -257,13 +268,13 @@ pub async fn count_832_items() -> Result<i64, String> {
 #[derive(Debug, Default, Deserialize)]
 pub struct ReceiptFilter {
   po_number: Option<String>,
-  vendor_name: Option<String>,
+  source_file: Option<String>,
   item_number: Option<String>,
   order_status: Option<String>,
 }
 
 // (SQL 運算式, 別名); 只列已命名的欄位; 與 src/views/ReceivingView.tsx 的 COLUMNS 相同順序
-const RECEIPT_850_COLUMNS: [(&str, &str); 20] = [
+const RECEIPT_850_COLUMNS: [(&str, &str); 21] = [
   ("h.f06_po_number", "f06_po_number"),
   ("h.f03_receipt_id", "f03_receipt_id"),
   ("h.f04_receipt_id_type", "f04_receipt_id_type"),
@@ -290,6 +301,8 @@ const RECEIPT_850_COLUMNS: [(&str, &str); 20] = [
   // 這一行明細第一次寫入 / 最後一次被更新的時間 (detail 的 created_at / updated_at), 台北時間
   ("to_char(d.created_at AT TIME ZONE 'Asia/Taipei', 'YYYY-MM-DD HH24:MI:SS')", "created_at"),
   ("to_char(d.updated_at AT TIME ZONE 'Asia/Taipei', 'YYYY-MM-DD HH24:MI:SS')", "updated_at"),
+  // 這張 PO 最後一次被哪個檔案更新 (header.source_file; 850 同一張 PO 只保留一份, 再收到就原地更新, 所以是最後一個檔案)
+  ("h.source_file", "source_file"),
 ];
 
 #[tauri::command]
@@ -300,9 +313,9 @@ pub async fn query_850_receipts(filter: ReceiptFilter, page: i64, page_size: i64
      WHERE {} AND {} AND {} AND {}
      ORDER BY h.id, d.id",
     ilike(1, "h.f06_po_number"),
-    ilike(2, "h.f11_vendor_name"),
+    ilike(2, "h.source_file"),
     // 商品編號被拆成前 8 碼與最後一碼; 接起來比對, 輸入 8 碼或完整 9 碼都能找到
-    ilike(3, "(d.f05_item_number || coalesce(d.f26_item_last_digit, ''))"),
+    ilike_any(3, "(d.f05_item_number || coalesce(d.f26_item_last_digit, ''))"),
     ilike(4, "h.f13_order_status"),
   );
   query_page(
@@ -311,7 +324,7 @@ pub async fn query_850_receipts(filter: ReceiptFilter, page: i64, page_size: i64
     &from_where,
     &[
       &filter.po_number,
-      &filter.vendor_name,
+      &filter.source_file,
       &filter.item_number,
       &filter.order_status,
     ],
