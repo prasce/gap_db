@@ -13,6 +13,11 @@
     -->
   <link rel="manifest" href="/manifest.json" />
   <link rel="stylesheet" href="/index.css" />
+  <!-- React 掛載前的底色跟著系統深淺色, 避免淺色模式啟動時先閃一下黑屏 (index.css 預設是深色) -->
+  <style>
+    body { background-color: #ffffff; }
+    @media (prefers-color-scheme: dark) { body { background-color: #141517; } }
+  </style>
   <title>index.html title</title>
 </head>
 <body>

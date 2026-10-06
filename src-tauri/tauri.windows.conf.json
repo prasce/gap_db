@@ -4,12 +4,11 @@
 			{
 				"title": "測試環境",
 				"label": "main",
-				"minWidth": 1000,
-				"minHeight": 600,
-				"resizable": true,
+				"backgroundColor": "#ffffff",
+				"resizable": false,
 				"fullscreen": false,
 				"visible": false,
-				"decorations": false,
+				"decorations": true,
 				"alwaysOnTop": false
 			}
 		]
