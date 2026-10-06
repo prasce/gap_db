@@ -165,20 +165,13 @@ pub(crate) async fn is_admin(client: &Client, account: Option<&str>) -> Result<b
   Ok(row.is_some())
 }
 
-// gapwmc_832_item 的 27 個資料欄; 與 src/views/ItemMasterView.tsx 的 COLUMNS 相同順序
-const ITEM_832_COLUMNS: [&str; 27] = [
+// gapwmc_832_item 顯示的 18 個資料欄; 與 src/views/ItemMasterView.tsx 的 COLUMNS 相同順序
+const ITEM_832_COLUMNS: [&str; 18] = [
   "customer_code",
   "sku",
   "item_desc",
-  "barcode",
-  "length",
-  "width",
-  "height",
-  "weight",
-  "units_per_carton",
-  "units_per_pallet",
-  "bundle_items",
-  "product_remarks",
+  // barcode / length / width / height / weight / units_per_carton / units_per_pallet / bundle_items / product_remarks
+  // 目前來源檔沒有資料, 先不顯示 (資料庫欄位仍在); 有資料要顯示時, 在這裡與 ItemMasterView.tsx 的 COLUMNS 同位置補回
   "long_description",
   "item_size",
   "item_colour",

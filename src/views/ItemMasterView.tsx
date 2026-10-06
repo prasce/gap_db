@@ -4,8 +4,7 @@ import { QueryTable } from '../components/QueryTable';
 
 // 與 src-tauri/src/db.rs 的 ITEM_832_COLUMNS 相同順序, 最後多 created_at、source_file 兩欄 (query_832_items 另外附加)
 const COLUMNS = [
-	'customer_code', 'sku', 'item_desc', 'barcode', 'length', 'width', 'height', 'weight',
-	'units_per_carton', 'units_per_pallet', 'bundle_items', 'product_remarks', 'long_description',
+	'customer_code', 'sku', 'item_desc', 'long_description',
 	'item_size', 'item_colour', 'item_style', 'division', 'department', 'list_price', 'country_of_origin',
 	'udf1', 'udf2', 'udf3', 'udf4', 'udf5', 'udf6', 'status', 'created_at', 'source_file'
 ] as const;
