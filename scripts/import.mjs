@@ -49,10 +49,40 @@ const IM_STATUS_BY_KEYWORD = [
   [/_Delete_/i, 'DELETE'],
 ];
 
-export function detectImStatus(sourceFile) {
+// 檔名含 Add/Update/Delete 時回傳對應事件類型, 沒有回傳 null
+export function findImStatusKeyword(sourceFile) {
   const match = IM_STATUS_BY_KEYWORD.find(([re]) => re.test(sourceFile));
-  if (!match) throw new Error(`檔名無法判斷事件類型 (應含 Add/Update/Delete): ${sourceFile}`);
-  return match[1];
+  return match ? match[1] : null;
+}
+
+export function detectImStatus(sourceFile) {
+  const status = findImStatusKeyword(sourceFile);
+  if (!status) throw new Error(`檔名無法判斷事件類型 (應含 Add/Update/Delete): ${sourceFile}`);
+  return status;
+}
+
+const imKey = (row) => `${row.customer_code ?? ''}|${row.sku ?? ''}`;
+
+// 檔名沒有 Add/Update/Delete 時 (例如 GAP 原始檔名 GAPTWN_832_...x12.pgp.im) 改從資料推斷, 整個檔案共用一個事件類型:
+//   檔案內每個 SKU (customer_code + sku) 都是資料庫沒有的 (或最新狀態已是 DELETE) -> ADD, 只要有一個已存在 -> UPDATE。
+// DELETE 無法從資料推斷, 必須由檔名標明。latestStatusByKey: Map<'customer_code|sku', 該 SKU 資料庫中最新一筆的 status>
+export function inferImStatus(rows, latestStatusByKey) {
+  const allNew = rows.every((row) => {
+    const latest = latestStatusByKey.get(imKey(row));
+    return latest === undefined || latest === 'DELETE';
+  });
+  return allNew ? 'ADD' : 'UPDATE';
+}
+
+async function latestImStatuses(client, rows) {
+  const skus = [...new Set(rows.map((row) => row.sku).filter(Boolean))];
+  const { rows: found } = await client.query(
+    `SELECT DISTINCT ON (customer_code, sku) customer_code, sku, status
+     FROM ${IM_TABLE} WHERE sku = ANY($1)
+     ORDER BY customer_code, sku, created_at DESC, id DESC`,
+    [skus]
+  );
+  return new Map(found.map((row) => [imKey(row), row.status]));
 }
 
 async function tableColumns(client, table) {
@@ -76,19 +106,30 @@ async function insert(client, table, cols, values) {
 
 // 每個 importXxx 都回傳新物件描述這次匯入的結果, 不接受/修改呼叫端傳進來的物件 (out-parameter 是 mutation, 這裡改成純回傳值組合)
 async function importIm(client, lines, sourceFile) {
-  const status = detectImStatus(sourceFile);
   const header = lines[0].split('|');
   const tableCols = await tableColumns(client, IM_TABLE);
   const cols = header.map(snake);
   const missing = cols.filter((c) => !tableCols.includes(c));
   if (missing.length) throw new Error(`.im 欄位在 ${IM_TABLE} 中找不到: ${missing.join(', ')}`);
 
-  const rows = lines.slice(1);
-  for (const [i, line] of rows.entries()) {
+  const rows = lines.slice(1).map((line, i) => {
     const fields = line.split('|');
     if (fields.length !== header.length) {
       throw new Error(`第 ${i + 2} 行有 ${fields.length} 欄, 應為 ${header.length} 欄`);
     }
+    return fields;
+  });
+
+  // 檔名有 Add/Update/Delete 就照檔名, 沒有 (GAP 原始檔名) 改從資料推斷
+  let status = findImStatusKeyword(sourceFile);
+  let inferred = false;
+  if (!status) {
+    const keyed = rows.map((fields) => ({ customer_code: fields[cols.indexOf('customer_code')], sku: fields[cols.indexOf('sku')] }));
+    status = inferImStatus(keyed, await latestImStatuses(client, keyed));
+    inferred = true;
+  }
+
+  for (const [i, fields] of rows.entries()) {
     await insert(
       client,
       IM_TABLE,
@@ -96,7 +137,7 @@ async function importIm(client, lines, sourceFile) {
       [sourceFile, i + 1, status, ...fields.map(toNull)]
     );
   }
-  return { counts: { [IM_TABLE]: rows.length }, type: 'im', poNumber: null, detailItems: [] };
+  return { counts: { [IM_TABLE]: rows.length }, type: 'im', poNumber: null, detailItems: [], status, inferred };
 }
 
 // 明細行配對鍵: 完整品號 (f05_item_number + f26_item_last_digit), 與 832 的 sku 對應。
@@ -369,7 +410,7 @@ async function main() {
           continue;
         }
         await client.query(dryRun ? 'ROLLBACK' : 'COMMIT');
-        const summary = result.skipped ?? Object.entries(result.counts).map(([t, n]) => `${t} ${n} 筆`).join(', ');
+        const summary = result.skipped ?? Object.entries(result.counts).map(([t, n]) => `${t} ${n} 筆`).join(', ') + (result.inferred ? ` (檔名無 Add/Update/Delete, 依資料推斷為 ${result.status})` : '');
         console.log(`${dryRun ? '[dry-run] ' : ''}${file}: ${summary}`);
         for (const c of result.changes ?? []) {
           const { inserted, updated, deleted } = c.lines;

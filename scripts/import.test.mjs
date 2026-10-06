@@ -2,7 +2,7 @@
 // 執行: node --test scripts/*.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildBlockedPoEmail, detailKey, detectImStatus, detectType, groupRcRecords, isCancelled, pickTargetHeader, planDetailSync, snake, toNull } from './import.mjs';
+import { buildBlockedPoEmail, detailKey, detectImStatus, detectType, findImStatusKeyword, groupRcRecords, inferImStatus, isCancelled, pickTargetHeader, planDetailSync, snake, toNull } from './import.mjs';
 
 test('toNull 把空字串轉成 null, 其餘原樣保留', () => {
   assert.equal(toNull(''), null);
@@ -34,6 +34,32 @@ test('detectImStatus 依檔名判斷 ADD/UPDATE/DELETE (不分大小寫)', () =>
 
 test('detectImStatus 對沒有 Add/Update/Delete 關鍵字的檔名丟出錯誤', () => {
   assert.throws(() => detectImStatus('832_Item_G53_003.im'), /檔名無法判斷事件類型/);
+});
+
+test('findImStatusKeyword 檔名有關鍵字回傳事件類型, 沒有回傳 null', () => {
+  assert.equal(findImStatusKeyword('832_Item_Update_G53_001.txt.im'), 'UPDATE');
+  assert.equal(findImStatusKeyword('GAPTWN_832_202610052329_000143730.x12.pgp.im'), null);
+});
+
+test('inferImStatus: SKU 全部是新的 -> ADD', () => {
+  const rows = [{ customer_code: '0001', sku: '1' }, { customer_code: '0001', sku: '2' }];
+  assert.equal(inferImStatus(rows, new Map()), 'ADD');
+});
+
+test('inferImStatus: 有 SKU 已存在 (最新狀態不是 DELETE) -> UPDATE', () => {
+  const rows = [{ customer_code: '0001', sku: '1' }, { customer_code: '0001', sku: '2' }];
+  assert.equal(inferImStatus(rows, new Map([['0001|1', 'ADD']])), 'UPDATE');
+  assert.equal(inferImStatus(rows, new Map([['0001|1', 'ADD'], ['0001|2', 'UPDATE']])), 'UPDATE');
+});
+
+test('inferImStatus: 已被 DELETE 的 SKU 再出現視為新增; 同 SKU 不同客戶代碼視為不同商品', () => {
+  const rows = [{ customer_code: '0001', sku: '1' }];
+  assert.equal(inferImStatus(rows, new Map([['0001|1', 'DELETE']])), 'ADD');
+  assert.equal(inferImStatus(rows, new Map([['0003|1', 'ADD']])), 'ADD');
+});
+
+test('inferImStatus: 沒有資料列視為 ADD', () => {
+  assert.equal(inferImStatus([], new Map()), 'ADD');
 });
 
 test('planDetailSync: 同品號更新(數量變更)、新品號新增、檔案裡沒有的舊行刪除', () => {
