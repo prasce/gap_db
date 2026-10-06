@@ -59,11 +59,13 @@
     },
     "windows": [
       {
-        "title": "GAP 測試環境",
+        "title": "測試環境",
         "label": "main",
-        "minWidth": 1000,
-        "minHeight": 600,
-        "resizable": true,
+        "width": 500,
+        "height": 309,
+        "center": true,
+        "resizable": false,
+        "maximizable": false,
         "fullscreen": false,
         "visible": false,
         "decorations": true,

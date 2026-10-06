@@ -21,6 +21,7 @@ import { PageTabs } from './components/PageTabs';
 import { ScrollToTop } from './components/ScrollToTop';
 import { useTauriContext } from './tauri/TauriProvider';
 import { TitleBar } from './tauri/TitleBar';
+import { useWindowMode } from './tauri/useWindowMode';
 import DealsView from './views/DealsView';
 import ExampleView from './views/ExampleView';
 import FallbackAppRender from './views/FallbackErrorBoundary';
@@ -43,6 +44,7 @@ interface View {
 
 // 主應用程式組件
 function MainApp() {
+	useWindowMode('main');
 	const { t } = useTranslation();
 	// check if using custom titlebar to adjust other components
 	const { usingCustomTitleBar } = useTauriContext();

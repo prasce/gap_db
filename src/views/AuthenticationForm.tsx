@@ -1,20 +1,10 @@
-import {
-	Button,
-	Divider,
-	Group,
-	Paper,
-	PaperProps,
-	PasswordInput,
-	Stack,
-	Text,
-	TextInput,
-} from '@mantine/core';
+import { Button, Group, PasswordInput, Stack, TextInput } from '@mantine/core';
 import { useForm } from '@mantine/form';
 import { isTauri } from '@tauri-apps/api/core';
 import { exit } from '@tauri-apps/plugin-process';
 import classes from './LoginPage.module.css';
 
-interface AuthenticationFormProps extends PaperProps {
+interface AuthenticationFormProps {
 	onSubmit?: (values: { account: string, password: string }) => void,
 	loading?: boolean
 }
@@ -28,8 +18,13 @@ function exitApp() {
 	}
 }
 
-export function AuthenticationForm(props: AuthenticationFormProps) {
-	const { onSubmit, loading, ...paperProps } = props;
+// 欄位沒有獨立的 label, 提示文字和紅色必填星號一起畫在輸入框內, 輸入內容後就隱藏
+function Hint({ text, visible }: { text: string, visible: boolean }) {
+	if (!visible) return null;
+	return <span className={classes.hint}>{text} <span className={classes.star}>*</span></span>;
+}
+
+export function AuthenticationForm({ onSubmit, loading }: AuthenticationFormProps) {
 	const form = useForm({
 		initialValues: {
 			account: '',
@@ -46,45 +41,38 @@ export function AuthenticationForm(props: AuthenticationFormProps) {
 	};
 
 	return (
-		<Paper radius='md' p='lg' withBorder {...paperProps} className={classes.card}>
-			<Text size='lg' fw={500} className={classes.heading}>
-				請輸入帳號密碼登入
-			</Text>
-
-			<Divider my='lg' />
-
-			<form onSubmit={form.onSubmit(handleSubmit)}>
-				<Stack>
+		<form onSubmit={form.onSubmit(handleSubmit)}>
+			<Stack gap='md'>
+				<div className={classes.field}>
 					<TextInput
-						required
-						label='帳號'
-						placeholder='請輸入帳號'
+						aria-label='帳號'
 						value={form.values.account}
 						onChange={(event) => form.setFieldValue('account', event.currentTarget.value)}
 						error={form.errors.account}
 						radius='md'
-						classNames={{ label: classes.label }} />
+						autoFocus />
+					<Hint text='請輸入帳號' visible={!form.values.account} />
+				</div>
 
+				<div className={classes.field}>
 					<PasswordInput
-						required
-						label='密碼'
-						placeholder='請輸入密碼'
+						aria-label='密碼'
 						value={form.values.password}
 						onChange={(event) => form.setFieldValue('password', event.currentTarget.value)}
 						error={form.errors.password}
-						radius='md'
-						classNames={{ label: classes.label }} />
-				</Stack>
+						radius='md' />
+					<Hint text='請輸入密碼' visible={!form.values.password} />
+				</div>
+			</Stack>
 
-				<Group justify='flex-end' mt='xl'>
-					<Button variant='outline' color='gapBlue' radius='xl' w={100} onClick={exitApp}>
-						離開
-					</Button>
-					<Button type='submit' color='gapBlue' radius='xl' w={100} loading={loading}>
-						登入
-					</Button>
-				</Group>
-			</form>
-		</Paper>
+			<Group justify='flex-end' mt='xl'>
+				<Button variant='outline' color='gapBlue' radius='xl' w={100} onClick={exitApp}>
+					離開
+				</Button>
+				<Button type='submit' color='gapBlue' radius='xl' w={100} loading={loading}>
+					登入
+				</Button>
+			</Group>
+		</form>
 	);
 }

@@ -14,9 +14,11 @@ import {
 import { useForm } from '@mantine/form';
 import { notifications } from '@mantine/notifications';
 import { useNavigate } from 'react-router-dom';
+import { useWindowMode } from '../tauri/useWindowMode';
 import classes from './ForgotPassword.module.css';
 
 export function ForgotPassword() {
+  useWindowMode('login');
   const navigate = useNavigate();
   
   const form = useForm({

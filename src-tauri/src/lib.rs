@@ -13,7 +13,7 @@ use tauri::{
   Manager,
 };
 use tauri_plugin_store;
-use tauri_plugin_window_state;
+use tauri_plugin_window_state::{self, StateFlags};
 
 mod db;
 mod tray_icon;
@@ -96,7 +96,20 @@ pub fn run() {
     .plugin(tauri_plugin_store::Builder::default().build())
     // save window position and size between sessions
     // if you remove this, make sure to uncomment the mainWebview?.show line in TauriProvider.tsx
-    .plugin(tauri_plugin_window_state::Builder::default().build())
+    // 不記住大小/位置/最大化: 啟動時一律是固定大小的登入視窗, 登入後由前端 useWindowMode 切換
+    .plugin(
+      tauri_plugin_window_state::Builder::default()
+        .with_state_flags(
+          StateFlags::all() & !(StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED),
+        )
+        .build(),
+    )
+    // 按關閉鈕 (X) 直接結束整個程式, 不留在系統匣
+    .on_window_event(|window, event| {
+      if let tauri::WindowEvent::CloseRequested { .. } = event {
+        window.app_handle().exit(0);
+      }
+    })
     // custom setup code
     .setup(|app| {
       let _ = create_tray_icon(app.handle());

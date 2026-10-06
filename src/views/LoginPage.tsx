@@ -3,10 +3,13 @@ import { notifications } from '@mantine/notifications';
 import { FormEvent, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
+import { useWindowMode } from '../tauri/useWindowMode';
+import loginArt from '../assets/login.png';
 import { AuthenticationForm } from './AuthenticationForm';
 import classes from './LoginPage.module.css';
 
 export function LoginPage() {
+	useWindowMode('login');
 	const navigate = useNavigate();
 	const { login, changePassword } = useAuth();
 	const [loading, setLoading] = useState(false);
@@ -72,20 +75,20 @@ export function LoginPage() {
 
 	if (needsPasswordChange) {
 		return (
-			<Container size={420} my={40}>
-				<Title ta="center" className={classes.title}>
+			<Container size={500} px="md" my="sm">
+				<Title order={3} ta="center" className={classes.title}>
 					請設定新密碼
 				</Title>
-				<Paper radius="md" p="lg" withBorder shadow="md" mt={25}>
+				<Paper radius="md" p="sm" withBorder shadow="md" mt="sm">
 					<form onSubmit={handleChangePassword}>
-						<Stack>
-							<PasswordInput required label="新密碼" placeholder="至少 6 碼"
+						<Stack gap="xs">
+							<PasswordInput required size="sm" label="新密碼" placeholder="至少 6 碼"
 								value={newPassword} onChange={(e) => setNewPassword(e.currentTarget.value)} />
-							<PasswordInput required label="確認新密碼" placeholder="再輸入一次新密碼"
+							<PasswordInput required size="sm" label="確認新密碼" placeholder="再輸入一次新密碼"
 								value={confirmPassword} onChange={(e) => setConfirmPassword(e.currentTarget.value)} />
 						</Stack>
-						<Group justify="flex-end" mt="xl">
-							<Button type="submit" color="gapBlue" radius="xl" w={140} loading={changing}>確認變更</Button>
+						<Group justify="flex-end" mt="md">
+							<Button type="submit" size="sm" color="gapBlue" radius="xl" w={120} loading={changing}>確認變更</Button>
 						</Group>
 					</form>
 				</Paper>
@@ -94,12 +97,16 @@ export function LoginPage() {
 	}
 
 	return (
-		<Container size={420} my={40}>
-			<Title ta="center" className={classes.title}>
-				歡迎使用GAP測試環境
-			</Title>
-
-			<AuthenticationForm onSubmit={handleLogin} loading={loading} shadow="md" p={25} mt={25} />
-		</Container>
+		<div className={classes.page}>
+			<div className={classes.art}>
+				<img src={loginArt} alt="" />
+			</div>
+			<div className={classes.panel}>
+				<Title order={2} className={`${classes.title} ${classes.panelTitle}`}>
+					
+				</Title>
+				<AuthenticationForm onSubmit={handleLogin} loading={loading} />
+			</div>
+		</div>
 	);
 }
