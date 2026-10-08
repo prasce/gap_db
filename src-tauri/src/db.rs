@@ -142,7 +142,6 @@ pub struct ItemFilter {
   pub(crate) customer_code: Option<String>,
   pub(crate) sku: Option<String>,
   pub(crate) source_file: Option<String>,
-  pub(crate) long_description: Option<String>,
   pub(crate) status: Option<String>,
   // "true" 時 (僅限管理員畫面會送出此值): 顯示每個 SKU 的完整歷史列 (含 status = DELETE);
   // 其餘情況只顯示每個 SKU 最新一筆且 status <> DELETE 的列 (一般使用者畫面); 見 SKU_IDENTITY_KEY 說明
@@ -150,7 +149,7 @@ pub struct ItemFilter {
 }
 
 // 832 SKU 唯一識別鍵 (2026-09-30 定案, 見 task.md Phase 1-A-1): customer_code + 完整 9 碼品號 (sku; 2026-10 起 GAP
-// 直接給 9 碼, 不再拆 8 碼 + long_description 第 1 碼) + item_size (實際內容為顏色) + item_colour (實際內容為尺寸)。
+// 直接給 9 碼, 不再拆 8 碼 + 末碼) + item_size (實際內容為顏色) + item_colour (實際內容為尺寸)。
 // gapwmc_832_item 為 append-only (每次匯入一律新增列, 不覆寫不刪除, 見 注意事項.md), 所以這組鍵不是資料庫層級的唯一鍵,
 // 只用來在查詢端分組取「這個 SKU 目前最新一筆 status」。
 pub(crate) const SKU_IDENTITY_KEY: &str = "customer_code, sku, item_size, item_colour";
@@ -165,27 +164,32 @@ pub(crate) async fn is_admin(client: &Client, account: Option<&str>) -> Result<b
   Ok(row.is_some())
 }
 
-// gapwmc_832_item 顯示的 18 個資料欄; 與 src/views/ItemMasterView.tsx 的 COLUMNS 相同順序
-const ITEM_832_COLUMNS: [&str; 18] = [
+// gapwmc_832_item 顯示的 23 個資料欄; 與 src/views/ItemMasterView.tsx 的 COLUMNS 相同順序
+const ITEM_832_COLUMNS: [&str; 23] = [
   "customer_code",
   "sku",
   "item_desc",
   // barcode / length / width / height / weight / units_per_carton / units_per_pallet / bundle_items / product_remarks
   // 目前來源檔沒有資料, 先不顯示 (資料庫欄位仍在); 有資料要顯示時, 在這裡與 ItemMasterView.tsx 的 COLUMNS 同位置補回
-  "long_description",
+  "garment_product_type_description",
+  "ticket_type_description",
+  "maintenance_type_code",
   "item_size",
   "item_colour",
   "item_style",
   "division",
-  "department",
+  "reference_identification_division_id_brand",
+  "class_id",
+  "sub_class_id",
+  "brand",
   "list_price",
   "country_of_origin",
-  "udf1",
-  "udf2",
-  "udf3",
-  "udf4",
-  "udf5",
-  "udf6",
+  "product_service_id_qualifier",
+  "product_service_id",
+  "description",
+  "division_name",
+  "season_code_description",
+  "department_name",
   "status",
 ];
 
@@ -225,12 +229,11 @@ pub async fn query_832_items(
   // show_deleted 是後端算出的布林值 (不是使用者輸入的文字), 直接嵌入 SQL 常值不會有注入風險
   let hide_deleted_clause = if show_deleted { "TRUE" } else { "status IS DISTINCT FROM 'DELETE'" };
   let from_where = format!(
-    "FROM {from_table} WHERE {} AND {} AND {} AND {} AND {} AND {hide_deleted_clause} ORDER BY id",
+    "FROM {from_table} WHERE {} AND {} AND {} AND {} AND {hide_deleted_clause} ORDER BY id",
     ilike(1, "customer_code"),
     ilike_any(2, "sku"),
     ilike(3, "source_file"),
-    ilike(4, "long_description"),
-    ilike(5, "status"),
+    ilike(4, "status"),
   );
   query_page(
     "id",
@@ -240,7 +243,6 @@ pub async fn query_832_items(
       &filter.customer_code,
       &filter.sku,
       &filter.source_file,
-      &filter.long_description,
       &filter.status,
     ],
     page,
