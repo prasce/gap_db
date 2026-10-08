@@ -1,30 +1,13 @@
 // 查詢頁共用版面: 查詢框 + 查詢按鈕 + 可勾選的資料表 + 分頁
 // command 為 src-tauri/src/db.rs 中回傳 Page 的 Tauri 指令; columns 須與該指令的欄位清單同順序
-import { Alert, Badge, Button, Checkbox, Group, Loader, Modal, Pagination, Select, Stack, Table, Text, TextInput } from '@mantine/core';
+import { Alert, Button, Checkbox, Group, Loader, Pagination, Select, Table, Text, TextInput } from '@mantine/core';
 import { invoke, isTauri } from '@tauri-apps/api/core';
-import { notifications } from '@mantine/notifications';
 import { useEffect, useRef, useState } from 'react';
-import { save } from '@tauri-apps/plugin-dialog';
-import { writeFile } from '@tauri-apps/plugin-fs';
-import writeExcelFile from 'write-excel-file/universal';
 import { useAuth } from '../auth/AuthContext';
-
-type Row = { id: number } & Record<string, string | null>;
-// total = 符合條件的總筆數; items 最多 limit 筆
-type Page = { items: Row[], total: number, limit: number };
-
-// 與 src-tauri/src/uat.rs 的 UatResult/UatItem 相同格式
-type UatItemStatus = 'pass' | 'fail' | 'skip';
-interface UatItem { name: string, status: UatItemStatus, detail: string }
-interface UatResult { id: number, page: string, overall_status: UatItemStatus, items: UatItem[] }
+import { exportXlsx, type Page, type Row } from '../lib/exportXlsx';
+import { UatButton, type UatPage } from './UatButton';
 
 const PAGE_SIZE_OPTIONS = ['15', '25', '50', '100'];
-const UAT_STATUS_LABEL: Record<UatItemStatus, { label: string, color: string }> = {
-	pass: { label: '通過', color: 'green' },
-	fail: { label: '失敗', color: 'red' },
-	skip: { label: '略過', color: 'gray' },
-};
-
 interface QueryTableProps {
 	command: string,
 	columns: readonly string[],
@@ -35,20 +18,19 @@ interface QueryTableProps {
 	// 部分條件改用勾選框而非文字輸入; key 須為 filters 其中之一, 勾選時送出 'true', 未勾選時送出空字串 (不限制)
 	checkboxFilters?: Record<string, { label: string }>
 	// 顯示「UAT 測試」按鈕並指定送給 run_uat_test 指令的頁面代碼; 不傳則不顯示按鈕
-	uatPage?: 'item_master' | 'receiving'
+	uatPage?: UatPage
 	// 顯示「匯出資料」按鈕, 值為預設檔名 (不含副檔名); 匯出目前查詢條件下的全部資料 (不受分頁限制) 為 .xlsx; 不傳則不顯示按鈕
 	exportName?: string
+	// 每次查詢固定附加的條件 (不顯示輸入框), 例如主從式頁面用 header_id 限定明細屬於哪一張 PO; 值改變時請用 key 重新掛載
+	fixedParams?: Record<string, string>
 }
-
-// 匯出時逐頁取回的每頁筆數, 對齊後端 MAX_PAGE_SIZE
-const EXPORT_PAGE_SIZE = 100;
 
 // 貼上的多行文字 (換行/Tab 分隔, 例如 Excel 一欄) 轉成 ; 分隔的一行, 略過空白行
 export function joinPastedLines(text: string): string {
 	return text.split(/[\r\n\t]+/).map(part => part.trim()).filter(Boolean).join(';');
 }
 
-export function QueryTable({ command, columns, filters, selectFilters, checkboxFilters, uatPage, exportName }: QueryTableProps) {
+export function QueryTable({ command, columns, filters, selectFilters, checkboxFilters, uatPage, exportName, fixedParams }: QueryTableProps) {
 	const { employee } = useAuth();
 	const [filter, setFilter] = useState<Record<string, string>>(() => Object.fromEntries(filters.map(f => [f, ''])));
 	const [items, setItems] = useState<Row[]>([]);
@@ -58,56 +40,20 @@ export function QueryTable({ command, columns, filters, selectFilters, checkboxF
 	const [selected, setSelected] = useState<Set<number>>(new Set());
 	const [loading, setLoading] = useState(false);
 	const [error, setError] = useState<string>();
-	const [uatRunning, setUatRunning] = useState(false);
-	const [uatResult, setUatResult] = useState<UatResult>();
 	const [exporting, setExporting] = useState(false);
 	// 只採用最後一次查詢的結果, 避免較慢回來的舊結果蓋掉新結果
 	const latestSearch = useRef(0);
 
-	async function runUatTest() {
-		if (!uatPage) return;
-		setUatRunning(true);
-		try {
-			const result = await invoke<UatResult>('run_uat_test', { page: uatPage, account: employee?.account ?? null });
-			setUatResult(result);
-		} catch (e) {
-			notifications.show({ title: 'UAT 測試執行失敗', message: String(e), color: 'red' });
-		} finally {
-			setUatRunning(false);
-		}
+	// 查詢條件 -> 指令參數 filter; 空字串代表不限制, fixedParams 一律附加
+	function toParams(source: Record<string, string>) {
+		return { ...Object.fromEntries(filters.map(f => [f, source[f]?.trim() || null])), ...fixedParams };
 	}
 
-	// 以目前查詢條件逐頁取回全部資料, 寫成 .xlsx; 檔名與位置由使用者在儲存對話框選擇
 	async function exportData() {
 		if (!exportName) return;
 		setExporting(true);
-		try {
-			const params = Object.fromEntries(filters.map(f => [f, filter[f]?.trim() || null]));
-			const rows: Row[] = [];
-			for (let pageNo = 1; ; pageNo++) {
-				const page = await invoke<Page>(command, { filter: params, page: pageNo, pageSize: EXPORT_PAGE_SIZE, account: employee?.account ?? null });
-				rows.push(...page.items);
-				if (rows.length >= page.total || page.items.length === 0) break;
-			}
-			if (rows.length === 0) {
-				notifications.show({ message: '沒有可匯出的資料', color: 'yellow' });
-				return;
-			}
-			const stamp = new Date().toLocaleString('sv').replace(/[-: ]/g, '').replace(/^(\d{8})(\d{6})$/, '$1_$2');
-			const path = await save({ defaultPath: `${exportName}_${stamp}.xlsx`, filters: [{ name: 'Excel', extensions: ['xlsx'] }] });
-			if (!path) return;
-			const sheetData = [
-				columns.map(column => ({ value: column, fontWeight: 'bold' as const })),
-				...rows.map(row => columns.map(column => ({ value: row[column] ?? '', type: String }))),
-			];
-			const blob = await writeExcelFile(sheetData, { columns: columns.map(() => ({ width: 22 })) }).toBlob();
-			await writeFile(path, new Uint8Array(await blob.arrayBuffer()));
-			notifications.show({ title: '匯出完成', message: `共 ${rows.length} 筆: ${path}`, color: 'green' });
-		} catch (e) {
-			notifications.show({ title: '匯出失敗', message: String(e), color: 'red' });
-		} finally {
-			setExporting(false);
-		}
+		await exportXlsx({ command, params: toParams(filter), columns, exportName, account: employee?.account ?? null });
+		setExporting(false);
 	}
 
 	// overridePage/overridePageSize: 換頁或改變每頁筆數時要用新值立即查詢, 不能等對應 state 更新才讀得到
@@ -117,8 +63,7 @@ export function QueryTable({ command, columns, filters, selectFilters, checkboxF
 		setError(undefined);
 		try {
 			const source = overrideFilter ?? filter;
-			// 空字串代表不限制
-			const params = Object.fromEntries(filters.map(f => [f, source[f]?.trim() || null]));
+			const params = toParams(source);
 			const page = await invoke<Page>(command, {
 				filter: params,
 				page: overridePage ?? currentPage,
@@ -214,23 +159,8 @@ export function QueryTable({ command, columns, filters, selectFilters, checkboxF
 			<Button size='xs' w={80} color='gapBlue' onClick={reset}>重置</Button>
 			{exportName &&
 				<Button size='xs' color='gapBlue' variant='outline' loading={exporting} onClick={exportData}>匯出資料</Button>}
-			{uatPage &&
-				<Button size='xs' color='red' ml='auto' loading={uatRunning} onClick={runUatTest}>UAT 測試</Button>}
+			{uatPage && <UatButton page={uatPage} />}
 		</Group>
-
-		<Modal opened={!!uatResult} onClose={() => setUatResult(undefined)}
-			title={`UAT 測試結果${uatResult ? ' - ' + UAT_STATUS_LABEL[uatResult.overall_status].label : ''}`} size='lg'>
-			<Stack gap='sm'>
-				{uatResult?.items.map((item, i) =>
-					<div key={i}>
-						<Group gap='xs' wrap='nowrap'>
-							<Badge size='sm' color={UAT_STATUS_LABEL[item.status].color}>{UAT_STATUS_LABEL[item.status].label}</Badge>
-							<Text size='sm' fw={500}>{item.name}</Text>
-						</Group>
-						{item.detail && <Text size='xs' c='dimmed' ml={4} style={{ whiteSpace: 'pre-wrap' }}>{item.detail}</Text>}
-					</div>)}
-			</Stack>
-		</Modal>
 
 		{checkboxFields.length > 0 &&
 			<Group mb='md' gap='sm'>

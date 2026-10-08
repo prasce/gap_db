@@ -9,7 +9,7 @@ A pre-launch integration pilot for GAP's Taiwan distribution centre. No accurate
 Two things share this repo:
 
 1. **The gap_db PostgreSQL database**: schema (`gap_db.sql`), the WMS file importer (`scripts/import.mjs`) and field notes (`注意事項.md`). This is the active work.
-2. **A Tauri v2 + React 19 + Mantine 7 desktop app**, started from the elibroftw "modern-desktop-app-template". `package.json` still names it `r2-t2`, and `tauri.conf.json` still has placeholder `productName`/`identifier`/updater values. The 「貨品主檔」 page (`/item-master`) reads `gapwmc_832_item` and the 「收貨明細」 page (`/receiving`) reads the three `gapwmc_850_*` tables joined one row per detail line; the other pages are still template placeholders.
+2. **A Tauri v2 + React 19 + Mantine 7 desktop app**, started from the elibroftw "modern-desktop-app-template". `package.json` still names it `r2-t2`, and `tauri.conf.json` still has placeholder `productName`/`identifier`/updater values. The 「貨品主檔」 page (`/item-master`) reads `gapwmc_832_item` and the 「收貨明細」 page (`/receiving`) shows a `gapwmc_850_header` form above Detail / Carton tabs; the other pages are still template placeholders.
 
 The user writes in Traditional Chinese. Keep doc and comment language consistent with the file being edited: `gap_db.sql`, `import.mjs` and `注意事項.md` are commented in Traditional Chinese.
 
@@ -70,6 +70,7 @@ pnpm run import-wms [--dry-run] [--replace] <files...>   # import WMS .im/.rc fi
     - In `db.rs`: a filter struct, a column list of `(SQL expression, alias)` pairs, and a command that builds `FROM … WHERE …` with `ilike(n, expr)` and calls `query_page()`. `query_page()` casts every column to `::text`, adds `count(*) OVER ()` as the total, caps results at `QUERY_LIMIT`, and returns `Page { items, total, limit }`.
     - A view that renders `<QueryTable command=… columns=… filters=…/>` (`src/components/QueryTable.tsx`). It supplies the filters, the "showing N of total" notice, stale-response guarding, and row selection.
   - The view's `COLUMNS` must match the alias order in `db.rs`, and `FILTERS` must match the filter struct's field names (for example `ITEM_832_COLUMNS` ↔ `ItemMasterView.tsx`, `RECEIPT_850_COLUMNS` ↔ `ReceivingView.tsx`).
+  - **Master-detail page** (收貨明細): `ReceivingView.tsx` shows one PO header at a time (`query_850_headers`, page size fixed at 1, so the page number is the PO index and `total` the PO count) and Detail / Carton tabs that render `QueryTable` with `fixedParams={{ header_id }}` (`query_850_details` / `query_850_cartons`). Column lists live in `src/views/receiving/columns.ts` and must match the lists in `db.rs`. The 匯出資料 button still exports the flat one-row-per-detail `query_850_receipts`.
   - A sidebar item can show a live count by setting `countCommand` in `SECTIONS` in `DoubleNavbar.tsx`.
   - Pages that need the DB show a notice under `pnpm start`, because there is no Tauri backend in the browser.
 - **i18n:** `src/translations/{en,fr}.json` with flat keys (`keySeparator: false`).

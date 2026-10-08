@@ -329,6 +329,121 @@ pub async fn query_850_receipts(filter: ReceiptFilter, page: i64, page_size: i64
   .await
 }
 
+// 台北時間字串; 表頭 / 明細 / 箱明細共用
+fn taipei_time(expr: &str) -> String {
+  format!("to_char({expr} AT TIME ZONE 'Asia/Taipei', 'YYYY-MM-DD HH24:MI:SS')")
+}
+
+// ---- 收貨明細頁的主從式版面: 上方表頭 (一次一張 PO), 下方明細 / 箱明細 ----
+
+// (SQL 運算式, 別名); 與 src/views/receiving/columns.ts 的 HEADER_COLUMNS 相同順序
+const HEADER_850_COLUMNS: [(&str, &str); 15] = [
+  ("h.f01_record_type", "f01_record_type"),
+  ("h.f02_interface_record_id", "f02_interface_record_id"),
+  ("h.f03_receipt_id", "f03_receipt_id"),
+  ("h.f04_receipt_id_type", "f04_receipt_id_type"),
+  ("h.f05_receipt_type", "f05_receipt_type"),
+  ("h.f06_po_number", "f06_po_number"),
+  ("h.f11_vendor_name", "f11_vendor_name"),
+  ("h.f12_vendor_number", "f12_vendor_number"),
+  ("h.f13_order_status", "f13_order_status"),
+  ("h.f18_country_of_origin", "f18_country_of_origin"),
+  ("h.f45_in_dc_date", "f45_in_dc_date"),
+  ("h.f46_po_creation_date", "f46_po_creation_date"),
+  ("to_char(h.created_at AT TIME ZONE 'Asia/Taipei', 'YYYY-MM-DD HH24:MI:SS')", "created_at"),
+  ("to_char(h.updated_at AT TIME ZONE 'Asia/Taipei', 'YYYY-MM-DD HH24:MI:SS')", "updated_at"),
+  ("h.source_file", "source_file"),
+];
+
+// 前端固定 page_size = 1: page 就是「第幾張 PO」, total 就是符合條件的 PO 張數; 列識別 id 為 header id, 供查明細用
+#[tauri::command]
+pub async fn query_850_headers(filter: ReceiptFilter, page: i64, page_size: i64) -> Result<Page, String> {
+  let from_where = format!(
+    "FROM gapwmc_850_header h
+     WHERE {} AND {} AND {} AND {}
+     ORDER BY h.id",
+    ilike(1, "h.f06_po_number"),
+    ilike(2, "h.source_file"),
+    // item_number 是表頭層級條件: 這張 PO 只要有任一明細符合就算符合 (比對方式同 query_850_receipts)
+    format!(
+      "($3::text IS NULL OR EXISTS (SELECT 1 FROM gapwmc_850_detail d WHERE d.header_id = h.id AND {}))",
+      ilike_any(3, "(d.f05_item_number || coalesce(d.f26_item_last_digit, ''))")
+    ),
+    ilike(4, "h.f13_order_status"),
+  );
+  query_page(
+    "h.id",
+    &HEADER_850_COLUMNS,
+    &from_where,
+    &[&filter.po_number, &filter.source_file, &filter.item_number, &filter.order_status],
+    page,
+    page_size,
+  )
+  .await
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct DetailFilter {
+  header_id: Option<String>,
+  item_number: Option<String>,
+}
+
+// 與 src/views/receiving/columns.ts 的 DETAIL_COLUMNS 相同順序
+fn detail_850_columns() -> Vec<(String, &'static str)> {
+  vec![
+    ("d.f01_record_type".into(), "f01_record_type"),
+    ("d.f02_interface_record_id".into(), "f02_interface_record_id"),
+    ("d.f03_line_ref".into(), "f03_line_ref"),
+    ("d.f04_line_number".into(), "f04_line_number"),
+    ("d.f05_item_number".into(), "f05_item_number"),
+    ("d.f06_order_quantity".into(), "f06_order_quantity"),
+    ("d.f07_quantity_um".into(), "f07_quantity_um"),
+    ("d.f71_product_type".into(), "f71_product_type"),
+    (taipei_time("d.created_at"), "created_at"),
+    (taipei_time("d.updated_at"), "updated_at"),
+  ]
+}
+
+#[tauri::command]
+pub async fn query_850_details(filter: DetailFilter, page: i64, page_size: i64) -> Result<Page, String> {
+  let columns = detail_850_columns();
+  let columns: Vec<(&str, &'static str)> = columns.iter().map(|(e, a)| (e.as_str(), *a)).collect();
+  // header_id 沒給 (還沒有任何 PO) 時一列都不顯示, 不能變成「不限制」而撈出全部明細
+  let from_where = format!(
+    "FROM gapwmc_850_detail d
+     WHERE $1::text IS NOT NULL AND d.header_id::text = $1 AND {}
+     ORDER BY d.id",
+    ilike_any(2, "(d.f05_item_number || coalesce(d.f26_item_last_digit, ''))"),
+  );
+  query_page("d.id", &columns, &from_where, &[&filter.header_id, &filter.item_number], page, page_size).await
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct CartonFilter {
+  header_id: Option<String>,
+}
+
+// 與 src/views/receiving/columns.ts 的 CARTON_COLUMNS 相同順序
+fn carton_850_columns() -> Vec<(String, &'static str)> {
+  vec![
+    ("c.f01_record_type".into(), "f01_record_type"),
+    ("c.f02_interface_record_id".into(), "f02_interface_record_id"),
+    ("c.f03_line_ref".into(), "f03_line_ref"),
+    ("c.f07_po_number".into(), "f07_po_number"),
+    ("c.f08_line_number".into(), "f08_line_number"),
+    (taipei_time("c.created_at"), "created_at"),
+  ]
+}
+
+#[tauri::command]
+pub async fn query_850_cartons(filter: CartonFilter, page: i64, page_size: i64) -> Result<Page, String> {
+  let columns = carton_850_columns();
+  let columns: Vec<(&str, &'static str)> = columns.iter().map(|(e, a)| (e.as_str(), *a)).collect();
+  let from_where =
+    "FROM gapwmc_850_carton c WHERE $1::text IS NOT NULL AND c.header_id::text = $1 ORDER BY c.id".to_string();
+  query_page("c.id", &columns, &from_where, &[&filter.header_id], page, page_size).await
+}
+
 #[tauri::command]
 pub async fn count_850_receipts() -> Result<i64, String> {
   count("SELECT count(*) FROM gapwmc_850_detail").await
