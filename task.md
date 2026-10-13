@@ -31,7 +31,7 @@ Phase 1 中針對 832 與 850 所設計的相關邏輯。
 
 ### Phase 1-A：資料模型準備
 
-1. **832 SKU 唯一識別鍵（已定案，2026-09-30）**：`customer_code` + 完整 9 碼品號（`sku`；2026-10-05 起 GAP 直接給 9 碼，原本的「8 碼 + `long_description` 第 1 碼」已廢止）+ `item_size`（實際內容為顏色）+ `item_colour`（實際內容為尺寸）。四者組合視為同一 SKU/Size 變體，用於分組取「最新一筆 status」；因設計為 append-only，此組合鍵**不是**資料庫唯一鍵/UNIQUE constraint，只用於查詢端 `GROUP BY` / `DISTINCT ON` 判斷最新狀態。SQL 範例：
+1. **832 SKU 唯一識別鍵（已定案，2026-09-30）**：`customer_code` + 完整 9 碼品號（`sku`；2026-10-05 起 GAP 直接給 9 碼，原本的「8 碼 + `long_description` 第 1 碼」已廢止）+ `item_size`（舊格式實際內容為顏色；1.0.8 起改為尺寸）+ `item_colour`（舊格式實際內容為尺寸；1.0.8 起改為顏色）。四者組合視為同一 SKU/Size 變體，用於分組取「最新一筆 status」；因設計為 append-only，此組合鍵**不是**資料庫唯一鍵/UNIQUE constraint，只用於查詢端 `GROUP BY` / `DISTINCT ON` 判斷最新狀態。SQL 範例：
    ```sql
    SELECT DISTINCT ON (customer_code, sku, item_size, item_colour)
           customer_code, sku, item_size, item_colour, status, created_at
