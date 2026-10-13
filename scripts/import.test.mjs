@@ -2,7 +2,7 @@
 // 執行: node --test scripts/*.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildBlockedPoEmail, detailKey, detectImStatus, detectType, findImStatusKeyword, groupRcRecords, inferImStatus, isCancelled, pickTargetHeader, planDetailSync, snake, toNull } from './import.mjs';
+import { buildBlockedPoEmail, detailKey, detectImStatus, detectType, findImStatusKeyword, groupRcRecords, inferImStatus, isCancelled, imRowStatuses, statusFromMaintenanceCode, pickTargetHeader, planDetailSync, snake, toNull } from './import.mjs';
 
 test('toNull 把空字串轉成 null, 其餘原樣保留', () => {
   assert.equal(toNull(''), null);
@@ -39,6 +39,21 @@ test('detectImStatus 對沒有 Add/Update/Delete 關鍵字的檔名丟出錯誤'
 test('findImStatusKeyword 檔名有關鍵字回傳事件類型, 沒有回傳 null', () => {
   assert.equal(findImStatusKeyword('832_Item_Update_G53_001.txt.im'), 'UPDATE');
   assert.equal(findImStatusKeyword('GAPTWN_832_202610052329_000143730.x12.pgp.im'), null);
+});
+
+test('statusFromMaintenanceCode: 001=UPDATE, 002=DELETE, 003=ADD, 其餘回傳 null', () => {
+  assert.equal(statusFromMaintenanceCode('001'), 'UPDATE');
+  assert.equal(statusFromMaintenanceCode('002'), 'DELETE');
+  assert.equal(statusFromMaintenanceCode(' 003 '), 'ADD');
+  assert.equal(statusFromMaintenanceCode('321761315'), null);
+  assert.equal(statusFromMaintenanceCode(''), null);
+  assert.equal(statusFromMaintenanceCode(undefined), null);
+});
+
+test('imRowStatuses: 每列依 Maintenance Type Code 決定, 認不得的列用 fallback', () => {
+  assert.deepEqual(imRowStatuses(['003', '001', '002'], 'UPDATE'), ['ADD', 'UPDATE', 'DELETE']);
+  assert.deepEqual(imRowStatuses(['003', '321761315', ''], 'UPDATE'), ['ADD', 'UPDATE', 'UPDATE']);
+  assert.deepEqual(imRowStatuses(['003', 'x'], null), ['ADD', null]);
 });
 
 test('inferImStatus: SKU 全部是新的 -> ADD', () => {

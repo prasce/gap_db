@@ -5,10 +5,10 @@ import { QueryTable } from '../components/QueryTable';
 // 與 src-tauri/src/db.rs 的 ITEM_832_COLUMNS 相同順序, 最後多 created_at、source_file 兩欄 (query_832_items 另外附加)
 const COLUMNS = [
 	'customer_code', 'sku', 'item_desc',
-	'garment_product_type_description', 'ticket_type_description', 'maintenance_type_code',
+	'garment_product_type_description', 'ticket_type_description', 'maintenance_type_code', 'commodity_code',
 	'item_size', 'item_colour', 'item_style', 'division', 'reference_identification_division_id_brand',
-	'class_id', 'sub_class_id', 'brand', 'list_price', 'country_of_origin',
-	'product_service_id_qualifier', 'product_service_id', 'description', 'division_name',
+	'class_id', 'sub_class_id', 'list_price', 'currency_code_instead',
+	'product_service_id', 'description', 'division_brand_name',
 	'season_code_description', 'department_name', 'status', 'created_at', 'source_file'
 ] as const;
 

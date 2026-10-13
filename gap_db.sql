@@ -2,7 +2,7 @@
 -- gap_db.sql
 -- PostgreSQL 資料表定義
 --   item_master        : 3M ItemMaster mapping spec 的 SCALE ITM 輸出格式 (278 欄)
---   gapwmc_832_item    : Gap 832 轉出的 WMS 商品檔 (.im, 31 欄)
+--   gapwmc_832_item    : Gap 832 轉出的 WMS 商品檔 (.im, 30 欄)
 --   gapwmc_850_header  : Gap 850 轉出的 WMS 收貨檔 (.rc) RCPHDR
 --   gapwmc_850_detail  : 同上 RCPDETL
 --   gapwmc_850_carton  : 同上 RCPCTNDR
@@ -591,7 +591,7 @@ COMMENT ON COLUMN item_master.date_time_stamp IS '#278 選填; 無對應 (No Map
 -- ---------------------------------------------------------------------
 -- 2. gapwmc_832_item: Gap 832 轉出的 WMS 商品檔 (.im, '|' 分隔, 第一行為欄位名稱)
 --    欄名為檔案第一行標題轉小寫加底線 (與 import.mjs snake() 相同), 欄位順序須與檔案一致。
---    2026-10 改為 31 欄新格式 (見 gapwmc_832_item.sql); 舊 26 欄格式 (long_description / department / udf1~6) 不再支援。
+--    2026-10 改為 30 欄格式 (GAP-TAIWAN_2PL_832_item 1.0.8, 見 gapwmc_832_item.1.0.8.sql); 舊 26/31 欄格式 (long_description / department / udf1~6) 不再支援。
 --    已存在的舊表需先 DROP TABLE gapwmc_832_item 再執行 (確認資料已備份)。
 -- ---------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS gapwmc_832_item (
@@ -614,6 +614,7 @@ CREATE TABLE IF NOT EXISTS gapwmc_832_item (
     garment_product_type_description            VARCHAR(50),
     ticket_type_description                     VARCHAR(50),
     maintenance_type_code                       VARCHAR(25),
+    commodity_code                              VARCHAR(25),
     item_size                                   VARCHAR(48),
     item_colour                                 VARCHAR(48),
     item_style                                  VARCHAR(48),
@@ -621,13 +622,11 @@ CREATE TABLE IF NOT EXISTS gapwmc_832_item (
     reference_identification_division_id_brand  VARCHAR(10),
     class_id                                    VARCHAR(10),
     sub_class_id                                VARCHAR(10),
-    brand                                       VARCHAR(10),
     list_price                                  NUMERIC(19,5),
-    country_of_origin                           VARCHAR(25),
-    product_service_id_qualifier                VARCHAR(50),
+    currency_code_instead                       VARCHAR(10),
     product_service_id                          VARCHAR(50),
     description                                 VARCHAR(100),
-    division_name                               VARCHAR(80),
+    division_brand_name                         VARCHAR(80),
     season_code_description                     VARCHAR(80),
     department_name                             VARCHAR(80),
     created_at                                  TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -635,10 +634,10 @@ CREATE TABLE IF NOT EXISTS gapwmc_832_item (
 
 CREATE INDEX IF NOT EXISTS ix_gapwmc_832_item_sku ON gapwmc_832_item (sku, customer_code);
 
-COMMENT ON TABLE gapwmc_832_item IS 'Gap 832 Item Definition 轉出的 WMS 商品檔 (.im), 31 欄新版格式';
+COMMENT ON TABLE gapwmc_832_item IS 'Gap 832 Item Definition 轉出的 WMS 商品檔 (.im), 30 欄 (GAP-TAIWAN_2PL_832_item 1.0.8)';
 COMMENT ON COLUMN gapwmc_832_item.source_file IS '匯入來源檔名';
 COMMENT ON COLUMN gapwmc_832_item.line_no IS '在來源檔中的行號 (不含標題行)';
-COMMENT ON COLUMN gapwmc_832_item.status IS '事件類型, 依來源檔名判斷, 檔名沒有時從資料推斷: ADD (新增) / UPDATE (更新) / DELETE (刪除); 資料不覆寫, 何時發生以 created_at 為準';
+COMMENT ON COLUMN gapwmc_832_item.status IS '事件類型, 以該列 maintenance_type_code 判斷 (001=UPDATE / 002=DELETE / 003=ADD), 代碼認不得時依來源檔名, 檔名也沒有時從資料推斷: ADD (新增) / UPDATE (更新) / DELETE (刪除); 資料不覆寫, 何時發生以 created_at 為準';
 COMMENT ON COLUMN gapwmc_832_item.customer_code IS '檔案第 1 欄 (Customer Code); 範例: 0001';
 COMMENT ON COLUMN gapwmc_832_item.sku IS '檔案第 2 欄 (SKU); 832 LIN03 Item Id 完整 9 碼; 範例: 324011059';
 COMMENT ON COLUMN gapwmc_832_item.item_desc IS '檔案第 3 欄 (Item Desc); 832 PID*F*08 PID05 Item Description; 範例: HK_ONL_TEST YELLOWPR';
@@ -653,23 +652,22 @@ COMMENT ON COLUMN gapwmc_832_item.bundle_items IS '檔案第 11 欄 (Bundle item
 COMMENT ON COLUMN gapwmc_832_item.product_remarks IS '檔案第 12 欄 (Product Remarks); 範例檔為空';
 COMMENT ON COLUMN gapwmc_832_item.garment_product_type_description IS '檔案第 13 欄 (Garment (Product) Type Description); 尚未對照 832 EDI 來源; 範例: 2';
 COMMENT ON COLUMN gapwmc_832_item.ticket_type_description IS '檔案第 14 欄 (Ticket Type Description); 尚未對照 832 EDI 來源; 範例: 0';
-COMMENT ON COLUMN gapwmc_832_item.maintenance_type_code IS '檔案第 15 欄 (Maintenance Type Code); 尚未對照 832 EDI 來源; 832.csv 範例為 003, 但真實檔案 GAPTWN_832_202610061916 放的是 9 碼 SKU (321761315), 語意待確認';
-COMMENT ON COLUMN gapwmc_832_item.item_size IS '檔案第 16 欄 (Item Size); 尚未對照 832 EDI 來源 (舊格式欄名為 Item Size, 實際放 LIN05 Color Code); 範例: M';
-COMMENT ON COLUMN gapwmc_832_item.item_colour IS '檔案第 17 欄 (Item Colour); 尚未對照 832 EDI 來源 (舊格式欄名為 Item Colour, 實際放 LIN07 Size Code); 範例: YELLOWPR';
-COMMENT ON COLUMN gapwmc_832_item.item_style IS '檔案第 18 欄 (Item Style); 尚未對照 832 EDI 來源 (舊格式為 LIN09 Item Parent Id); 範例: 1199434';
-COMMENT ON COLUMN gapwmc_832_item.division IS '檔案第 19 欄 (Division); 尚未對照 832 EDI 來源 (舊格式為 REF*6P Group Id); 範例: 114';
-COMMENT ON COLUMN gapwmc_832_item.reference_identification_division_id_brand IS '檔案第 20 欄 (Reference Identification-Division Id (Brand)); 尚未對照 832 EDI 來源; 範例: 1140';
-COMMENT ON COLUMN gapwmc_832_item.class_id IS '檔案第 21 欄 (Class Id); 尚未對照 832 EDI 來源; 範例: 0003';
-COMMENT ON COLUMN gapwmc_832_item.sub_class_id IS '檔案第 22 欄 (Sub-Class Id); 尚未對照 832 EDI 來源; 範例: 0001';
-COMMENT ON COLUMN gapwmc_832_item.brand IS '檔案第 23 欄 (Brand); 尚未對照 832 EDI 來源; 範例: 0001';
+COMMENT ON COLUMN gapwmc_832_item.maintenance_type_code IS '檔案第 15 欄 (Maintenance Type Code); 異動類型代碼: 001 = UPDATE (更新), 002 = DELETE (刪除), 003 = ADD (新增); 範例: 003 (舊真實檔案 GAPTWN_832_202610061916 曾放 9 碼 SKU, 1.0.8 起以代碼為準)';
+COMMENT ON COLUMN gapwmc_832_item.commodity_code IS '檔案第 16 欄 (Commodity Code); 1.0.8 新增; 尚未對照 832 EDI 來源; 範例檔為空';
+COMMENT ON COLUMN gapwmc_832_item.item_size IS '檔案第 17 欄 (Item Size); 尚未對照 832 EDI 來源; 1.0.8 起欄名與內容相符, 放尺寸 (舊格式曾放 LIN05 Color Code, 即顏色); 範例: M';
+COMMENT ON COLUMN gapwmc_832_item.item_colour IS '檔案第 18 欄 (Item Colour); 尚未對照 832 EDI 來源; 1.0.8 起欄名與內容相符, 放顏色 (舊格式曾放 LIN07 Size Code, 即尺寸); 範例: YELLOWPR';
+COMMENT ON COLUMN gapwmc_832_item.item_style IS '檔案第 19 欄 (Item Style); 尚未對照 832 EDI 來源 (舊格式為 LIN09 Item Parent Id); 範例: 1199434';
+COMMENT ON COLUMN gapwmc_832_item.division IS '檔案第 20 欄 (Division); 尚未對照 832 EDI 來源 (舊格式為 REF*6P Group Id); 範例: 114';
+COMMENT ON COLUMN gapwmc_832_item.reference_identification_division_id_brand IS '檔案第 21 欄 (Reference Identification-Division Id (Brand)); 尚未對照 832 EDI 來源; 範例: 1140';
+COMMENT ON COLUMN gapwmc_832_item.class_id IS '檔案第 22 欄 (Class Id); 尚未對照 832 EDI 來源; 範例: 0003';
+COMMENT ON COLUMN gapwmc_832_item.sub_class_id IS '檔案第 23 欄 (Sub-Class Id); 尚未對照 832 EDI 來源; 範例: 0001';
 COMMENT ON COLUMN gapwmc_832_item.list_price IS '檔案第 24 欄 (List Price); 尚未對照 832 EDI 來源 (舊格式為 CTP**RTL CTP03 Retail Price); 範例: 0.21';
-COMMENT ON COLUMN gapwmc_832_item.country_of_origin IS '檔案第 25 欄 (Country of Origin); 尚未對照 832 EDI 來源; 範例: TWD (值看起來像幣別, 待確認)';
-COMMENT ON COLUMN gapwmc_832_item.product_service_id_qualifier IS '檔案第 26 欄 (Product/Service ID Qualifier); 尚未對照 832 EDI 來源; 範例: 1200154482243';
-COMMENT ON COLUMN gapwmc_832_item.product_service_id IS '檔案第 27 欄 (Product/Service ID); 尚未對照 832 EDI 來源; 範例: 0';
-COMMENT ON COLUMN gapwmc_832_item.description IS '檔案第 28 欄 (Description); 尚未對照 832 EDI 來源; 範例: 4';
-COMMENT ON COLUMN gapwmc_832_item.division_name IS '檔案第 29 欄 (Division name); 尚未對照 832 EDI 來源 (舊格式為 REF*19 REF03); 範例: GAP';
-COMMENT ON COLUMN gapwmc_832_item.season_code_description IS '檔案第 30 欄 (Season Code Description); 尚未對照 832 EDI 來源 (舊格式為 REF*MY REF03); 範例: 2027F07';
-COMMENT ON COLUMN gapwmc_832_item.department_name IS '檔案第 31 欄 (Department name); 尚未對照 832 EDI 來源 (舊格式為 REF*DP REF03); 範例: WMS BTM';
+COMMENT ON COLUMN gapwmc_832_item.currency_code_instead IS '檔案第 25 欄 (currency code instead); 1.0.8 起取代舊版 Country of Origin (值本來就是幣別); 範例: TWD';
+COMMENT ON COLUMN gapwmc_832_item.product_service_id IS '檔案第 26 欄 (Product/Service ID); 尚未對照 832 EDI 來源; 範例: 0';
+COMMENT ON COLUMN gapwmc_832_item.description IS '檔案第 27 欄 (Description); 尚未對照 832 EDI 來源; 範例: 4';
+COMMENT ON COLUMN gapwmc_832_item.division_brand_name IS '檔案第 28 欄 (Division (Brand) name); 舊版欄名為 Division name; 尚未對照 832 EDI 來源 (舊格式為 REF*19 REF03); 範例: GAP';
+COMMENT ON COLUMN gapwmc_832_item.season_code_description IS '檔案第 29 欄 (Season Code Description); 尚未對照 832 EDI 來源 (舊格式為 REF*MY REF03); 範例: 2027F07';
+COMMENT ON COLUMN gapwmc_832_item.department_name IS '檔案第 30 欄 (Department name); 尚未對照 832 EDI 來源 (舊格式為 REF*DP REF03); 範例: WMS BTM';
 
 -- ---------------------------------------------------------------------
 -- 3. gapwmc_850_header / detail / carton: Gap 850 轉出的 WMS 收貨檔 (.rc, '|' 分隔)

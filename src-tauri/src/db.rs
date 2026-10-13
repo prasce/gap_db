@@ -164,8 +164,8 @@ pub(crate) async fn is_admin(client: &Client, account: Option<&str>) -> Result<b
   Ok(row.is_some())
 }
 
-// gapwmc_832_item 顯示的 23 個資料欄; 與 src/views/ItemMasterView.tsx 的 COLUMNS 相同順序
-const ITEM_832_COLUMNS: [&str; 23] = [
+// gapwmc_832_item 顯示的 22 個資料欄; 與 src/views/ItemMasterView.tsx 的 COLUMNS 相同順序
+const ITEM_832_COLUMNS: [&str; 22] = [
   "customer_code",
   "sku",
   "item_desc",
@@ -174,6 +174,7 @@ const ITEM_832_COLUMNS: [&str; 23] = [
   "garment_product_type_description",
   "ticket_type_description",
   "maintenance_type_code",
+  "commodity_code",
   "item_size",
   "item_colour",
   "item_style",
@@ -181,13 +182,11 @@ const ITEM_832_COLUMNS: [&str; 23] = [
   "reference_identification_division_id_brand",
   "class_id",
   "sub_class_id",
-  "brand",
   "list_price",
-  "country_of_origin",
-  "product_service_id_qualifier",
+  "currency_code_instead",
   "product_service_id",
   "description",
-  "division_name",
+  "division_brand_name",
   "season_code_description",
   "department_name",
   "status",

@@ -61,6 +61,18 @@ export function detectImStatus(sourceFile) {
   return status;
 }
 
+// Maintenance Type Code (1.0.8 第 15 欄) 的事件類型: 001 = UPDATE, 002 = DELETE, 003 = ADD; 認不得的值 (含舊檔放 SKU 的情況) 回傳 null
+const IM_STATUS_BY_MAINTENANCE_CODE = { '001': 'UPDATE', '002': 'DELETE', '003': 'ADD' };
+
+export function statusFromMaintenanceCode(code) {
+  return IM_STATUS_BY_MAINTENANCE_CODE[(code ?? '').trim()] ?? null;
+}
+
+// 每列的事件類型: 以該列的 Maintenance Type Code 為準, 認不得的列用 fallback (檔名或資料推斷的整檔事件類型, 可能為 null)
+export function imRowStatuses(codes, fallback) {
+  return codes.map((code) => statusFromMaintenanceCode(code) ?? fallback);
+}
+
 const imKey = (row) => `${row.customer_code ?? ''}|${row.sku ?? ''}`;
 
 // 檔名沒有 Add/Update/Delete 時 (例如 GAP 原始檔名 GAPTWN_832_...x12.pgp.im) 改從資料推斷, 整個檔案共用一個事件類型:
@@ -120,24 +132,29 @@ async function importIm(client, lines, sourceFile) {
     return fields;
   });
 
+  // 事件類型以每列的 Maintenance Type Code 為準 (001/002/003); 只有認不得代碼的列才退回:
   // 檔名有 Add/Update/Delete 就照檔名, 沒有 (GAP 原始檔名) 改從資料推斷
-  let status = findImStatusKeyword(sourceFile);
+  const codeIdx = cols.indexOf('maintenance_type_code');
+  const codes = rows.map((fields) => (codeIdx >= 0 ? fields[codeIdx] : ''));
+  const needFallback = codes.some((code) => statusFromMaintenanceCode(code) === null);
+  let fallback = findImStatusKeyword(sourceFile);
   let inferred = false;
-  if (!status) {
+  if (needFallback && !fallback) {
     const keyed = rows.map((fields) => ({ customer_code: fields[cols.indexOf('customer_code')], sku: fields[cols.indexOf('sku')] }));
-    status = inferImStatus(keyed, await latestImStatuses(client, keyed));
+    fallback = inferImStatus(keyed, await latestImStatuses(client, keyed));
     inferred = true;
   }
+  const statuses = imRowStatuses(codes, fallback);
 
   for (const [i, fields] of rows.entries()) {
     await insert(
       client,
       IM_TABLE,
       ['source_file', 'line_no', 'status', ...cols],
-      [sourceFile, i + 1, status, ...fields.map(toNull)]
+      [sourceFile, i + 1, statuses[i], ...fields.map(toNull)]
     );
   }
-  return { counts: { [IM_TABLE]: rows.length }, type: 'im', poNumber: null, detailItems: [], status, inferred };
+  return { counts: { [IM_TABLE]: rows.length }, type: 'im', poNumber: null, detailItems: [], status: [...new Set(statuses)].join('/'), inferred };
 }
 
 // 明細行配對鍵: 完整品號 (f05_item_number + f26_item_last_digit), 與 832 的 sku 對應。
@@ -410,7 +427,7 @@ async function main() {
           continue;
         }
         await client.query(dryRun ? 'ROLLBACK' : 'COMMIT');
-        const summary = result.skipped ?? Object.entries(result.counts).map(([t, n]) => `${t} ${n} 筆`).join(', ') + (result.inferred ? ` (檔名無 Add/Update/Delete, 依資料推斷為 ${result.status})` : '');
+        const summary = result.skipped ?? Object.entries(result.counts).map(([t, n]) => `${t} ${n} 筆`).join(', ') + (result.inferred ? ` (Maintenance Type Code 無法判斷且檔名無 Add/Update/Delete, 依資料推斷為 ${result.status})` : '');
         console.log(`${dryRun ? '[dry-run] ' : ''}${file}: ${summary}`);
         for (const c of result.changes ?? []) {
           const { inserted, updated, deleted } = c.lines;
