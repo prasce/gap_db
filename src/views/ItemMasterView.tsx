@@ -7,8 +7,8 @@ const COLUMNS = [
 	'customer_code', 'sku', 'item_desc',
 	'garment_product_type_description', 'ticket_type_description', 'maintenance_type_code', 'commodity_code',
 	'item_size', 'item_colour', 'item_style', 'division', 'reference_identification_division_id_brand',
-	'class_id', 'sub_class_id', 'list_price', 'currency_code_instead',
-	'product_service_id', 'description', 'division_brand_name',
+	'class_id', 'sub_class_id', 'list_price', 'currency_code',
+	'product_service_id', 'description', 'division_name',
 	'season_code_description', 'department_name', 'status', 'created_at', 'source_file'
 ] as const;
 
