@@ -2,7 +2,30 @@
 // 執行: node --test scripts/*.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildBlockedPoEmail, detailKey, detectImStatus, detectType, findImStatusKeyword, groupRcRecords, inferImStatus, isCancelled, imRowStatuses, statusFromMaintenanceCode, pickTargetHeader, planDetailSync, snake, toNull } from './import.mjs';
+import { buildBlockedPoEmail, dedupeImRows, detailKey, detectImStatus, detectType, findImStatusKeyword, groupRcRecords, imColumnName, inferImStatus, isCancelled, imRowStatuses, statusFromMaintenanceCode, pickTargetHeader, planDetailSync, snake, toNull } from './import.mjs';
+
+test('imColumnName: 1.0.9 標題對應到資料庫欄名 (含資料方拼錯的 Old proce period)', () => {
+  assert.equal(imColumnName('Old proce period'), 'old_price_period');
+  assert.equal(imColumnName('Old price period'), 'old_price_period');
+  assert.equal(imColumnName('New price period'), 'new_price_period');
+  assert.equal(imColumnName('List Price(Old_Price)'), 'list_price');
+  assert.equal(imColumnName('Net price(New_Price)'), 'net_price');
+  assert.equal(imColumnName('Currency_code'), 'currency_code');
+  assert.equal(imColumnName('Units per Carton'), 'units_per_carton');
+});
+
+test('dedupeImRows: 內容完全相同的列只保留第一次出現, 行號沿用原檔行號', () => {
+  const rows = [['a', '1'], ['b', '2'], ['a', '1'], ['a', '2']];
+  assert.deepEqual(dedupeImRows(rows), [
+    { fields: ['a', '1'], lineNo: 1 },
+    { fields: ['b', '2'], lineNo: 2 },
+    { fields: ['a', '2'], lineNo: 4 },
+  ]);
+});
+
+test('dedupeImRows: 欄位邊界不同的列不會被誤判成重複', () => {
+  assert.equal(dedupeImRows([['a|b', 'c'], ['a', 'b|c']]).length, 2);
+});
 
 test('toNull 把空字串轉成 null, 其餘原樣保留', () => {
   assert.equal(toNull(''), null);

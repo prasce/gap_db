@@ -31,6 +31,31 @@ const IM_TABLE = 'gapwmc_832_item';
 export const toNull = (v) => (v === '' ? null : v);
 export const snake = (h) => h.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
 
+// 1.0.9 的 .im 標題 snake() 後與資料庫欄名不同的對照: 資料方把 Old price period 拼成 Old proce period (兩種都收),
+// 價格欄標題帶括號說明 (List Price(Old_Price) / Net price(New_Price))。其餘標題照 snake() 即為欄名
+const IM_HEADER_ALIASES = {
+  old_proce_period: 'old_price_period',
+  list_price_old_price: 'list_price',
+  net_price_new_price: 'net_price',
+};
+
+export const imColumnName = (header) => {
+  const name = snake(header);
+  return IM_HEADER_ALIASES[name] ?? name;
+};
+
+// 資料方轉檔會產生內容完全相同的重複列, 同一個檔案內只保留第一次出現的那列; lineNo 沿用原檔行號 (不含標題行, 從 1 起算)。
+// 只在單一檔案內去重, 不同檔案之間仍是 append-only
+export function dedupeImRows(rows) {
+  const seen = new Set();
+  return rows.flatMap((fields, i) => {
+    const key = JSON.stringify(fields);
+    if (seen.has(key)) return [];
+    seen.add(key);
+    return [{ fields, lineNo: i + 1 }];
+  });
+}
+
 function readLines(file) {
   return readFileSync(file, 'utf-8')
     .split(/\r?\n/)
@@ -120,17 +145,20 @@ async function insert(client, table, cols, values) {
 async function importIm(client, lines, sourceFile) {
   const header = lines[0].split('|');
   const tableCols = await tableColumns(client, IM_TABLE);
-  const cols = header.map(snake);
+  const cols = header.map(imColumnName);
   const missing = cols.filter((c) => !tableCols.includes(c));
   if (missing.length) throw new Error(`.im 欄位在 ${IM_TABLE} 中找不到: ${missing.join(', ')}`);
 
-  const rows = lines.slice(1).map((line, i) => {
+  const parsed = lines.slice(1).map((line, i) => {
     const fields = line.split('|');
     if (fields.length !== header.length) {
       throw new Error(`第 ${i + 2} 行有 ${fields.length} 欄, 應為 ${header.length} 欄`);
     }
     return fields;
   });
+  const entries = dedupeImRows(parsed);
+  const rows = entries.map((entry) => entry.fields);
+  const duplicates = parsed.length - rows.length;
 
   // 事件類型以每列的 Maintenance Type Code 為準 (001/002/003); 只有認不得代碼的列才退回:
   // 檔名有 Add/Update/Delete 就照檔名, 沒有 (GAP 原始檔名) 改從資料推斷
@@ -146,15 +174,15 @@ async function importIm(client, lines, sourceFile) {
   }
   const statuses = imRowStatuses(codes, fallback);
 
-  for (const [i, fields] of rows.entries()) {
+  for (const [i, { fields, lineNo }] of entries.entries()) {
     await insert(
       client,
       IM_TABLE,
       ['source_file', 'line_no', 'status', ...cols],
-      [sourceFile, i + 1, statuses[i], ...fields.map(toNull)]
+      [sourceFile, lineNo, statuses[i], ...fields.map(toNull)]
     );
   }
-  return { counts: { [IM_TABLE]: rows.length }, type: 'im', poNumber: null, detailItems: [], status: [...new Set(statuses)].join('/'), inferred };
+  return { counts: { [IM_TABLE]: rows.length }, type: 'im', poNumber: null, detailItems: [], status: [...new Set(statuses)].join('/'), inferred, duplicates };
 }
 
 // 明細行配對鍵: 完整品號 (f05_item_number + f26_item_last_digit), 與 832 的 sku 對應。
@@ -427,7 +455,7 @@ async function main() {
           continue;
         }
         await client.query(dryRun ? 'ROLLBACK' : 'COMMIT');
-        const summary = result.skipped ?? Object.entries(result.counts).map(([t, n]) => `${t} ${n} 筆`).join(', ') + (result.inferred ? ` (Maintenance Type Code 無法判斷且檔名無 Add/Update/Delete, 依資料推斷為 ${result.status})` : '');
+        const summary = result.skipped ?? Object.entries(result.counts).map(([t, n]) => `${t} ${n} 筆`).join(', ') + (result.inferred ? ` (Maintenance Type Code 無法判斷且檔名無 Add/Update/Delete, 依資料推斷為 ${result.status})` : '') + (result.duplicates ? ` (略過 ${result.duplicates} 列內容完全相同的重複列)` : '');
         console.log(`${dryRun ? '[dry-run] ' : ''}${file}: ${summary}`);
         for (const c of result.changes ?? []) {
           const { inserted, updated, deleted } = c.lines;

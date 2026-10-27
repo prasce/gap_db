@@ -41,14 +41,14 @@ pnpm run import-wms [--dry-run] [--replace] <files...>   # import WMS .im/.rc fi
 
 | WMS file | Records | Tables |
 |---|---|---|
-| `.im` (from 832, first line is the header row) | one item per line, 26 cols | `gapwmc_832_item` |
+| `.im` (from 832, first line is the header row) | one item per line, 33 cols (1.0.9) | `gapwmc_832_item` |
 | `.rc` (from 850) | `RCPHDR` 46 cols / `RCPDETL` 71 cols / `RCPCTNDR` 8 cols | `gapwmc_850_header` / `_detail` / `_carton` |
 
 - **The `.rc` column-naming convention:** `.rc` columns are named `fNN[_name]`, where NN is the field position in the file. Names exist only where a value was matched against the 850 EDI source; the rest stay `fNN VARCHAR(255)` until the WMS gives a real spec. `注意事項.md` lists what is unconfirmed and the data quirks. Read it before changing column meanings.
 - **The importer depends on column order:** `import.mjs` reads column order from `information_schema` at run time. It maps the `fNN` columns positionally and maps `.im` header names to snake_case column names. So the ordinal order of `fNN` columns in `gap_db.sql` must match the file field order, and field-count mismatches are rejected.
 - **Importer behaviour:**
   - Each file is imported in one transaction.
-  - `.im` (832) is append-only: duplicates are detected by `source_file` (the basename), and `--replace` deletes that file's old rows first.
+  - `.im` (832) is append-only: duplicates are detected by `source_file` (the basename), and `--replace` deletes that file's old rows first. Rows whose content is identical to an earlier row in the same file (a known artefact of GAP's conversion) are imported once (`dedupeImRows`). Header names go through `imColumnName()`, which aliases `Old proce period` (GAP's typo), `List Price(Old_Price)` and `Net price(New_Price)` to `old_price_period` / `list_price` / `net_price`.
   - `.rc` (850) keeps one live copy per PO (`f06_po_number`; unique index `ux_gapwmc_850_header_po` is partial and covers non-cancelled rows only). A repeated PO is updated in place; a `CANCEL`/`CANCELLED` file only changes the status and the PO stays in the database; if a PO whose copies are all cancelled arrives again as a non-cancelled status (e.g. ACTIVE), a new header/detail/carton set is inserted and the cancelled one is kept as history (`pickTargetHeader` in `import.mjs`). Updates: header columns are overwritten (`source_file` = last file, `updated_at` bumped), detail lines are synced to the file by full item number (`f05_item_number` + `f26_item_last_digit`: same item updated, new item inserted, missing item deleted), and cartons are replaced only if the file carries any. No other history is kept. `--replace` only re-applies a file; it never deletes the PO.
   - `.rc` files are blocked when any detail item (`f05_item_number` + `f26_item_last_digit`) has no matching `sku` in `gapwmc_832_item` (since 2026-10 GAP sends the full 9-digit item number in `sku` and in `f05_item_number`, with `f26_item_last_digit` empty; the old 8-digit + last-digit split is gone): nothing is written to header/detail/carton (new or existing PO), the importer prints `已擋下` and exits 1, and an alert email is sent.
   - Detail and carton rows attach to the most recent `RCPHDR` in the file.

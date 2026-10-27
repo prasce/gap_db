@@ -6,8 +6,9 @@ import { QueryTable } from '../components/QueryTable';
 const COLUMNS = [
 	'customer_code', 'sku', 'item_desc',
 	'garment_product_type_description', 'ticket_type_description', 'maintenance_type_code', 'commodity_code',
+	'old_price_period', 'new_price_period',
 	'item_size', 'item_colour', 'item_style', 'division', 'reference_identification_division_id_brand',
-	'class_id', 'sub_class_id', 'list_price', 'currency_code',
+	'class_id', 'sub_class_id', 'list_price', 'net_price', 'currency_code',
 	'product_service_id', 'description', 'division_name',
 	'season_code_description', 'department_name', 'status', 'created_at', 'source_file'
 ] as const;
