@@ -4,7 +4,6 @@ import { FormEvent, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import { useWindowMode } from '../tauri/useWindowMode';
-import loginArt from '../assets/login.png';
 import { AuthenticationForm } from './AuthenticationForm';
 import classes from './LoginPage.module.css';
 
@@ -99,7 +98,11 @@ export function LoginPage() {
 	return (
 		<div className={classes.page}>
 			<div className={classes.art}>
-				<img src={loginArt} alt="" />
+				<div className={classes.welcome}>
+					Welcome<br />
+					Test Environment<br />
+					Systems
+				</div>
 			</div>
 			<div className={classes.panel}>
 				<Title order={2} className={`${classes.title} ${classes.panelTitle}`}>
