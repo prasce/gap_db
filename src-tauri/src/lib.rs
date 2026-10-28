@@ -77,6 +77,8 @@ pub fn run() {
       tray_update_lang,
       process_file,
       db::query_832_items,
+      db::query_832_detail,
+      db::query_832_price,
       db::count_832_items,
       db::query_850_receipts,
       db::query_850_headers,

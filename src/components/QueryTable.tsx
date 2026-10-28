@@ -23,6 +23,10 @@ interface QueryTableProps {
 	exportName?: string
 	// 每次查詢固定附加的條件 (不顯示輸入框), 例如主從式頁面用 header_id 限定明細屬於哪一張 PO; 值改變時請用 key 重新掛載
 	fixedParams?: Record<string, string>
+	// 表頭顯示名稱 (欄位別名 -> 顯示文字); 沒列在這裡的欄位直接顯示欄位名稱
+	columnLabels?: Record<string, string>
+	// 不顯示查詢列 (查詢條件、查詢 / 重置 / 匯出 / UAT 按鈕); 資料仍會在載入時查詢並可換頁
+	hideSearchBar?: boolean
 }
 
 // 貼上的多行文字 (換行/Tab 分隔, 例如 Excel 一欄) 轉成 ; 分隔的一行, 略過空白行
@@ -30,7 +34,7 @@ export function joinPastedLines(text: string): string {
 	return text.split(/[\r\n\t]+/).map(part => part.trim()).filter(Boolean).join(';');
 }
 
-export function QueryTable({ command, columns, filters, selectFilters, checkboxFilters, uatPage, exportName, fixedParams }: QueryTableProps) {
+export function QueryTable({ command, columns, filters, selectFilters, checkboxFilters, uatPage, exportName, fixedParams, columnLabels, hideSearchBar }: QueryTableProps) {
 	const { employee } = useAuth();
 	const [filter, setFilter] = useState<Record<string, string>>(() => Object.fromEntries(filters.map(f => [f, ''])));
 	const [items, setItems] = useState<Row[]>([]);
@@ -126,7 +130,7 @@ export function QueryTable({ command, columns, filters, selectFilters, checkboxF
 	const checkboxFields = filters.filter(field => checkboxFilters?.[field]);
 
 	return <>
-		<Group mb='sm' gap='sm'>
+		{!hideSearchBar && <Group mb='sm' gap='sm'>
 			{filters.map(field => {
 				if (checkboxFilters?.[field]) return null;
 				const options = selectFilters?.[field];
@@ -160,7 +164,7 @@ export function QueryTable({ command, columns, filters, selectFilters, checkboxF
 			{exportName &&
 				<Button size='xs' color='gapBlue' variant='outline' loading={exporting} onClick={exportData}>匯出資料</Button>}
 			{uatPage && <UatButton page={uatPage} />}
-		</Group>
+		</Group>}
 
 		{checkboxFields.length > 0 &&
 			<Group mb='md' gap='sm'>
@@ -192,7 +196,7 @@ export function QueryTable({ command, columns, filters, selectFilters, checkboxF
 							<Checkbox size='xs' aria-label='全選' checked={allSelected}
 								indeterminate={selected.size > 0 && !allSelected} onChange={toggleAll} />
 						</Table.Th>
-						{columns.map(column => <Table.Th key={column} style={{ whiteSpace: 'nowrap' }}>{column}</Table.Th>)}
+						{columns.map(column => <Table.Th key={column} style={{ whiteSpace: 'nowrap' }}>{columnLabels?.[column] ?? column}</Table.Th>)}
 					</Table.Tr>
 				</Table.Thead>
 				<Table.Tbody>

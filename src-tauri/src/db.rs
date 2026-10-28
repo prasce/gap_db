@@ -253,6 +253,64 @@ pub async fn query_832_items(
   .await
 }
 
+// ---- 貨品主檔頁的主從式版面: 上方表頭 (一次一個 SKU, 用 query_832_items 且 page_size = 1), 下方 Detail / Price history ----
+
+// header_id 是 query_832_items 回傳的列識別 id (該 SKU 目前顯示的那一筆事件); 下方兩個頁籤列出同一個 SKU
+// (SKU_IDENTITY_KEY: customer_code + sku + item_size + item_colour) 的全部事件, 新的在前, 含 status = DELETE 的事件
+#[derive(Debug, Default, Deserialize)]
+pub struct ItemHistoryFilter {
+  header_id: Option<String>,
+}
+
+// 與 src/views/itemMaster/columns.ts 的 DETAIL_COLUMNS 相同順序: 表頭沒顯示的欄位都放在這裡
+const ITEM_832_DETAIL_COLUMNS: [(&str, &str); 18] = [
+  ("d.length", "length"),
+  ("d.width", "width"),
+  ("d.height", "height"),
+  ("d.weight", "weight"),
+  ("d.units_per_carton", "units_per_carton"),
+  ("d.units_per_pallet", "units_per_pallet"),
+  ("d.bundle_items", "bundle_items"),
+  ("d.product_remarks", "product_remarks"),
+  ("d.garment_product_type_description", "garment_product_type_description"),
+  ("d.ticket_type_description", "ticket_type_description"),
+  ("d.maintenance_type_code", "maintenance_type_code"),
+  ("d.commodity_code", "commodity_code"),
+  ("d.reference_identification_division_id_brand", "reference_identification_division_id_brand"),
+  ("d.product_service_id", "product_service_id"),
+  ("d.description", "description"),
+  ("d.division_name", "division_name"),
+  ("d.status", "status"),
+  ("to_char(d.created_at AT TIME ZONE 'Asia/Taipei', 'YYYY-MM-DD HH24:MI:SS')", "created_at"),
+];
+
+// 與 src/views/itemMaster/columns.ts 的 PRICE_COLUMNS 相同順序; list_price 為舊價, net_price 為新價 (1.0.9)
+const ITEM_832_PRICE_COLUMNS: [(&str, &str); 5] = [
+  ("d.list_price", "list_price"),
+  ("d.old_price_period", "old_price_period"),
+  ("d.net_price", "net_price"),
+  ("d.new_price_period", "new_price_period"),
+  ("to_char(d.created_at AT TIME ZONE 'Asia/Taipei', 'YYYY-MM-DD HH24:MI:SS')", "created_at"),
+];
+
+// header_id 沒給 (還沒有任何 SKU) 或找不到時一列都不顯示, 不能變成「不限制」而撈出全部資料
+const ITEM_832_HISTORY_FROM: &str = "FROM gapwmc_832_item d
+  JOIN gapwmc_832_item h ON h.id::text = $1
+   AND d.customer_code = h.customer_code AND d.sku = h.sku
+   AND d.item_size IS NOT DISTINCT FROM h.item_size
+   AND d.item_colour IS NOT DISTINCT FROM h.item_colour
+  ORDER BY d.created_at DESC, d.id DESC";
+
+#[tauri::command]
+pub async fn query_832_detail(filter: ItemHistoryFilter, page: i64, page_size: i64) -> Result<Page, String> {
+  query_page("d.id", &ITEM_832_DETAIL_COLUMNS, ITEM_832_HISTORY_FROM, &[&filter.header_id], page, page_size).await
+}
+
+#[tauri::command]
+pub async fn query_832_price(filter: ItemHistoryFilter, page: i64, page_size: i64) -> Result<Page, String> {
+  query_page("d.id", &ITEM_832_PRICE_COLUMNS, ITEM_832_HISTORY_FROM, &[&filter.header_id], page, page_size).await
+}
+
 #[tauri::command]
 pub async fn count_832_items() -> Result<i64, String> {
   count("SELECT count(*) FROM gapwmc_832_item").await
